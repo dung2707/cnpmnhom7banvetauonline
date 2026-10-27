@@ -33,6 +33,10 @@ Cấu trúc cần có:
 
 Trong Supabase, bật Realtime cho bảng `public.seats` và cấu hình quyền RLS cho các thao tác đọc/cập nhật `seats` cùng đọc/thêm/xóa `seat_holds` mà ứng dụng cần. Việc tự giải phóng hết hạn chạy khi ứng dụng đang mở; để dọn ghế của phiên đã đóng trình duyệt, cần thêm tác vụ hết hạn phía máy chủ.
 
+## Lịch sử đặt vé
+
+Tab `#lich-su` hiển thị các đơn từ `bookings`, kèm `booking_passengers` và `payments`. Tài khoản thông thường chỉ đọc đơn có `contact_email` khớp email đăng nhập; tài khoản demo `demo@duongsat.vn` xem các đơn mới nhất. Cấu hình quan hệ khóa ngoại giữa các bảng để Supabase hỗ trợ truy vấn lồng nhau, đồng thời cho phép đọc các đơn liên quan và cập nhật `bookings.status` theo chính sách RLS. Hủy vé đặt trạng thái `cancelled`.
+
 ## Nối backend thật
 
 Thay phần triển khai trong `authService.ts` bằng request tới API đăng ký/đăng nhập, rồi giữ nguyên các hàm `signIn` và `signUp` của context. Mock hiện chỉ giữ tài khoản đăng ký trong bộ nhớ của tab và không phù hợp để lưu mật khẩu thật; session đăng nhập được giữ qua `localStorage` để tiện thử giao diện.

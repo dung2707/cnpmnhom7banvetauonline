@@ -5,6 +5,11 @@ import trips from '../data/trips.json'
 import { supabase } from '../lib/supabase'
 import { TrainCarriageBar } from './TrainCarriageBar'
 import { trainCarriages } from '../data/trainCarriages'
+import { BookingSummary, type BookingSummaryResult } from './booking/BookingSummary'
+import { PassengerForm, type PassengerDetails } from './booking/PassengerForm'
+import { PaymentPage } from './payment/PaymentPage'
+import { BookingHistory } from './booking/BookingHistory'
+import { createBooking, savePassengers, type BookingRecord } from '../services/bookingService'
 
 type Trip = (typeof trips)[number]
 type ScheduledTrip = Trip & { id: string; scheduleDate: string }
@@ -44,6 +49,7 @@ type TripNotificationRequest = {
 }
 type PassengerType = 'adult' | 'child' | 'student' | 'senior'
 type PassengerCounts = Record<PassengerType, number>
+type BookingStep = 'seats' | 'passengers' | 'summary' | 'payment'
 const HOLD_DURATION_MS = 10 * 60 * 1000
 const SESSION_STORAGE_KEY = 'duongsat.seat-session-id'
 const NOTIFICATION_STORAGE_KEY = 'duongsat.notifications'
@@ -59,6 +65,12 @@ const addOnServices = [
   { id: 'meal', label: 'Suất ăn nhẹ trên tàu', price: 35000 },
 ] as const
 type AddOnId = (typeof addOnServices)[number]['id']
+const totalFallbackSeatCapacity = trainCarriages.reduce((total, carriage) => total + carriage.seatNumbers.length, 0)
+const paymentBankConfig = {
+  bankId: import.meta.env.VITE_VIETQR_BANK_ID ?? '',
+  accountNumber: import.meta.env.VITE_VIETQR_ACCOUNT_NUMBER ?? '',
+  accountName: import.meta.env.VITE_VIETQR_ACCOUNT_NAME ?? '',
+}
 
 const stations = [
   { name: 'Hà Nội', latitude: 21.0245, longitude: 105.8412 },
@@ -132,8 +144,7 @@ function seededRandom(seed: string) {
 }
 
 function generateTripsForDate(origin: string, destination: string, date: string): ScheduledTrip[] {
-  const generationId = globalThis.crypto.randomUUID()
-  const random = seededRandom(`${origin}|${destination}|${date}|${generationId}`)
+  const random = seededRandom(`${origin}|${destination}|${date}`)
   const originIndex = stations.findIndex((station) => station.name === origin)
   const destinationIndex = stations.findIndex((station) => station.name === destination)
   const routeStations = stations
@@ -165,7 +176,7 @@ function generateTripsForDate(origin: string, destination: string, date: string)
       const routeSuffix = `${originIndex + 1}${destinationIndex + 1}`
       return {
         ...template,
-        id: `${template.code}-${routeSuffix}-${date}-${generationId}`,
+        id: `${template.code}-${routeSuffix}-${date}`,
         code: `${template.code}-${routeSuffix}`,
         origin,
         destination,
@@ -205,18 +216,21 @@ function createFallbackSeats(
   const carriage = trainCarriages.find((item) => item.number === carNumber)
   const fare = trip.seats.find((item) => item.name === carriage?.fareName)
   const random = seededRandom(`${trip.id}|${carriageId}`)
-  const firstSeatIndex = (carNumber - 1) * 32
+  const seatCapacity = carriage?.seatNumbers.length ?? 0
+  const firstSeatIndex = trainCarriages
+    .filter((item) => item.number < carNumber)
+    .reduce((total, item) => total + item.seatNumbers.length, 0)
   const availableEnd = forceUnavailable ? 0 : availableSeatCount
   const availableCount = forceUnavailable
     ? 0
-    : Math.max(0, Math.min(firstSeatIndex + 32, availableEnd) - firstSeatIndex)
+    : Math.max(0, Math.min(firstSeatIndex + seatCapacity, availableEnd) - firstSeatIndex)
   const heldStart = availableEnd
-  const heldEnd = Math.min(320, heldStart + 16)
-  const heldCount = Math.max(0, Math.min(firstSeatIndex + 32, heldEnd) - Math.max(firstSeatIndex, heldStart))
+  const heldEnd = Math.min(totalFallbackSeatCapacity, heldStart + 16)
+  const heldCount = Math.max(0, Math.min(firstSeatIndex + seatCapacity, heldEnd) - Math.max(firstSeatIndex, heldStart))
   const statuses: SeatRow['status'][] = [
     ...Array.from({ length: availableCount }, () => 'available' as const),
     ...Array.from({ length: heldCount }, () => 'held' as const),
-    ...Array.from({ length: 32 - availableCount - heldCount }, () => 'booked' as const),
+    ...Array.from({ length: seatCapacity - availableCount - heldCount }, () => 'booked' as const),
   ]
 
   for (let index = statuses.length - 1; index > 0; index -= 1) {
@@ -238,6 +252,9 @@ function createFallbackSeats(
 
 export function HomePage() {
   const { user, signOut } = useAuth()
+  const [activeView, setActiveView] = useState(() =>
+    window.location.hash === '#lich-su' || window.location.hash === '#history' ? 'history' : 'home',
+  )
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
   const [departureDate, setDepartureDate] = useState('')
@@ -260,6 +277,11 @@ export function HomePage() {
   const [toast, setToast] = useState<Toast | null>(null)
   const [clockNow, setClockNow] = useState(Date.now())
   const [bookingConfirmed, setBookingConfirmed] = useState(false)
+  const [bookingStep, setBookingStep] = useState<BookingStep>('seats')
+  const [bookingPassengers, setBookingPassengers] = useState<PassengerDetails[]>([])
+  const [bookingRecord, setBookingRecord] = useState<BookingRecord | null>(null)
+  const [isBookingSubmitting, setIsBookingSubmitting] = useState(false)
+  const [bookingError, setBookingError] = useState('')
   const pendingSeatIds = useRef(new Set<string>())
   const expiringHoldIds = useRef(new Set<string>())
   const seatStatuses = useRef(new Map<string, SeatRow['status']>())
@@ -330,6 +352,15 @@ export function HomePage() {
   const totalPrice = selectedPlaces.reduce((total, place) => total + place.price, 0) +
     addOnServices.filter((service) => selectedServices.includes(service.id)).reduce((total, service) => total + service.price, 0)
   const seatSearchKey = hasSearched ? `${origin}|${destination}|${departureDate}` : ''
+
+  useEffect(() => {
+    const updateView = () => {
+      setActiveView(window.location.hash === '#lich-su' || window.location.hash === '#history' ? 'history' : 'home')
+    }
+
+    window.addEventListener('hashchange', updateView)
+    return () => window.removeEventListener('hashchange', updateView)
+  }, [])
 
   useEffect(() => {
     try {
@@ -432,7 +463,8 @@ export function HomePage() {
           .from('trip_notifications')
           .select('trip_code, trip_date, origin, destination')
           .eq('user_email', email)
-        if (!isActive || error) return
+        if (error) throw error
+        if (!isActive) return
 
         const remoteRequests: TripNotificationRequest[] = (data ?? []).map((request) => ({
           id: `${email}:${request.trip_code}:${request.trip_date}`,
@@ -449,7 +481,10 @@ export function HomePage() {
         setTripNotificationRequests(mergedRequests)
         localStorage.setItem(requestStorageKey, JSON.stringify(mergedRequests))
       } catch {
-        // Keep locally saved requests when Supabase is unavailable or its schema differs.
+        if (!isActive) return
+        const fallbackRequests = readLocalValue<TripNotificationRequest[]>(requestStorageKey, [])
+        tripNotificationRequestsRef.current = fallbackRequests
+        setTripNotificationRequests(fallbackRequests)
       }
     }
 
@@ -790,7 +825,52 @@ export function HomePage() {
     setSelectedPlaces([])
     setSelectedServices([])
     setBookingConfirmed(false)
+    setBookingStep('seats')
+    setBookingPassengers([])
+    setBookingRecord(null)
+    setIsBookingSubmitting(false)
+    setBookingError('')
     setSelectedTrip(trip)
+  }
+
+  async function continueToPayment(summary: BookingSummaryResult) {
+    if (!selectedTrip || isBookingSubmitting) return
+
+    setIsBookingSubmitting(true)
+    setBookingError('')
+    try {
+      let booking = bookingRecord
+      if (!booking) {
+        booking = await createBooking({
+          bookingCode: `DS${Date.now()}${globalThis.crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+          tripId: selectedTrip.id,
+          tripCode: selectedTrip.code,
+          tripDate: selectedTrip.scheduleDate,
+          origin: selectedTrip.origin,
+          destination: selectedTrip.destination,
+          contactEmail: bookingPassengers[0]?.email ?? '',
+          totalAmount: summary.total,
+        })
+        setBookingRecord(booking)
+      }
+
+      const passengersToSave = bookingPassengers.map((passenger) => {
+        const seat = selectedPlaces.find((place) => place.id === passenger.seatId)
+        if (!seat) throw new Error('Một ghế đã chọn không còn được giữ. Vui lòng kiểm tra lại danh sách hành khách.')
+        return {
+          ...passenger,
+          carNumber: seat.carNumber,
+          seatNumber: seat.seatNumber,
+          baseFare: seat.price,
+        }
+      })
+      await savePassengers(booking.id, passengersToSave)
+      setBookingStep('payment')
+    } catch (error) {
+      setBookingError(error instanceof Error ? error.message : 'Không thể tạo đặt vé. Vui lòng thử lại.')
+    } finally {
+      setIsBookingSubmitting(false)
+    }
   }
 
   function isNotificationRegistered(trip: ScheduledTrip) {
@@ -1006,8 +1086,8 @@ export function HomePage() {
           <span>đường sắt<span className="brand-dot">.</span></span>
         </a>
         <nav className="home-nav" aria-label="Điều hướng chính">
-          <a className="nav-active" href="#dat-ve">Vé tàu</a>
-          <a href="#lich-su">Lịch sử đặt vé</a>
+          <a className={activeView === 'home' ? 'nav-active' : undefined} aria-current={activeView === 'home' ? 'page' : undefined} href="#dat-ve">Vé tàu</a>
+          <a className={activeView === 'history' ? 'nav-active' : undefined} aria-current={activeView === 'history' ? 'page' : undefined} href="#lich-su">Lịch sử đặt vé</a>
         </nav>
         <div className="notification-center">
           <button
@@ -1055,6 +1135,7 @@ export function HomePage() {
           </button>
         </div>
       </header>
+      {activeView === 'history' ? <BookingHistory /> : <>
       <section className="home-hero">
         <div className="home-hero-content">
           <span className="eyebrow">Xin chào, {user?.displayName}</span>
@@ -1218,15 +1299,17 @@ export function HomePage() {
           <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedTrip(null) }}>
             <section className="trip-modal flex flex-col" role="dialog" aria-modal="true" aria-labelledby="trip-modal-title">
               <header className="modal-header">
-                <div><span className="eyebrow">Chọn chỗ · {selectedTrip.code}</span><h2 id="trip-modal-title">{origin} đến {destination}</h2><p>{selectedTrip.departureTime} · {departureDate ? formatDate(departureDate) : 'Tàu Thống Nhất'}</p></div>
+                <div><span className="eyebrow">{bookingStep === 'seats' ? 'Chọn chỗ' : bookingStep === 'passengers' ? 'Bước 1 · Thông tin hành khách' : 'Bước 2 · Tóm tắt & thanh toán'} · {selectedTrip.code}</span><h2 id="trip-modal-title">{origin} đến {destination}</h2><p>{selectedTrip.departureTime} · {departureDate ? formatDate(departureDate) : 'Tàu Thống Nhất'}</p></div>
                 {holdCountdown !== null && <span className="hold-countdown" role="timer" aria-label={`Thời gian giữ chỗ còn ${Math.floor(holdCountdown / 60)} phút ${holdCountdown % 60} giây`}><Clock3 size={16} />{String(Math.floor(holdCountdown / 60)).padStart(2, '0')}:{String(holdCountdown % 60).padStart(2, '0')}</span>}
                 <button className="modal-close" type="button" onClick={() => setSelectedTrip(null)} aria-label="Đóng chi tiết"><X size={20} /></button>
               </header>
-              <TrainCarriageBar cars={displayedCarriages} selectedCarNumber={selectedCarNumber} trainCode={selectedTrip.code} onSelectCar={(carNumber) => {
-                setSelectedCarNumber(carNumber)
-                setBookingConfirmed(false)
-              }} />
-              <div className="modal-content seat-map-content flex-1">
+              {bookingStep === 'seats' && (
+                <TrainCarriageBar cars={displayedCarriages} selectedCarNumber={selectedCarNumber} trainCode={selectedTrip.code} onSelectCar={(carNumber) => {
+                  setSelectedCarNumber(carNumber)
+                  setBookingConfirmed(false)
+                }} />
+              )}
+              {bookingStep === 'seats' && <div className="modal-content seat-map-content flex-1">
                 <div className="seat-map-intro">
                   <div><span className="eyebrow">Sơ đồ chọn chỗ</span><p>Ghế trống được tạo tự động nếu chưa có dữ liệu.</p></div>
                   <div className="seat-map-legend" aria-label="Chú thích sơ đồ ghế">
@@ -1316,16 +1399,66 @@ export function HomePage() {
                     ))}
                   </div>
                 </section>
-              </div>
-              <footer className="modal-footer">
+              </div>}
+              {bookingStep === 'seats' && <footer className="modal-footer">
                 <div className="total-copy"><small><strong>Đang xem {selectedCar.title}</strong> · {selectedPlaces.length > 0 ? selectedPlaces.map((place) => `${trainCarriages[place.carNumber - 1].title} · ${place.seatNumber}`).join(', ') : 'Chưa chọn chỗ'} · dịch vụ {selectedServices.length} mục</small><strong>{formatPrice(totalPrice)} đ</strong>{bookingConfirmed && <p className="confirmation-message" role="status">Đã xác nhận lựa chọn chỗ ngồi.</p>}</div>
                 <div className="confirm-action">
                   {(selectedPlaces.length === 0 || totalPrice === 0) && <small className="seat-selection-reminder" role="status">⚠️ Vui lòng chọn ít nhất 1 chỗ để tiếp tục</small>}
-                  <button className={`confirm-seat-button${bookingConfirmed ? ' confirm-seat-button-confirmed' : ''}`} type="button" disabled={selectedPlaces.length === 0 || totalPrice === 0} onClick={() => setBookingConfirmed(true)}>
+                  <button className={`confirm-seat-button${bookingConfirmed ? ' confirm-seat-button-confirmed' : ''}`} type="button" disabled={selectedPlaces.length === 0 || totalPrice === 0} onClick={() => {
+                    setBookingConfirmed(true)
+                    setBookingStep('passengers')
+                  }}>
                     <Check size={16} />{bookingConfirmed ? 'Đã xác nhận đặt vé' : 'Xác nhận đặt vé'}
                   </button>
                 </div>
-              </footer>
+              </footer>}
+              {bookingStep !== 'seats' && (
+                <div className="modal-content flex-1">
+                  {bookingStep === 'passengers' && (
+                    <PassengerForm
+                      seats={selectedPlaces.map((place) => ({
+                        ...place,
+                        carriageTitle: trainCarriages.find((carriage) => carriage.number === place.carNumber)?.title,
+                      }))}
+                      onContinue={(passengers) => {
+                        setBookingPassengers(passengers)
+                        setBookingError('')
+                        setBookingStep('summary')
+                      }}
+                    />
+                  )}
+                  {(bookingStep === 'summary' || bookingStep === 'payment') && (
+                    <>
+                      <BookingSummary
+                        seats={selectedPlaces.map((place) => ({
+                          ...place,
+                          carriageTitle: trainCarriages.find((carriage) => carriage.number === place.carNumber)?.title,
+                        }))}
+                        passengers={bookingPassengers}
+                        addOns={addOnServices
+                          .filter((service) => selectedServices.includes(service.id))
+                          .map(({ label, price }) => ({ label, price }))}
+                        showContinue={bookingStep === 'summary'}
+                        isSubmitting={isBookingSubmitting}
+                        onContinue={(summary) => void continueToPayment(summary)}
+                      />
+                      {bookingError && (
+                        <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+                          {bookingError}
+                        </p>
+                      )}
+                      {bookingStep === 'payment' && bookingRecord && (
+                        <PaymentPage
+                          bookingId={bookingRecord.id}
+                          bookingCode={bookingRecord.booking_code}
+                          totalAmount={bookingRecord.total_amount}
+                          bankConfig={paymentBankConfig}
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </section>
           </div>
         )}
@@ -1336,6 +1469,7 @@ export function HomePage() {
             }}>{toast.message}</button>
             : <div className={`seat-toast seat-toast-${toast.kind}`} role={toast.kind === 'error' ? 'alert' : 'status'}>{toast.message}</div>
         )}
+      </>}
     </main>
   )
 }
