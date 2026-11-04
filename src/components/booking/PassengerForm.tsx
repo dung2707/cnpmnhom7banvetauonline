@@ -16,6 +16,9 @@ export interface PassengerDetails {
   phone: string
   email: string
   type: PassengerType
+  dateOfBirth?: string
+  studentId?: string
+  schoolName?: string
 }
 
 interface PassengerFormValues {
@@ -23,6 +26,9 @@ interface PassengerFormValues {
   phone: string
   email: string
   type: PassengerType
+  dateOfBirth: string
+  studentId: string
+  schoolName: string
 }
 
 type PassengerField = keyof PassengerFormValues
@@ -30,6 +36,7 @@ type PassengerErrors = Partial<Record<PassengerField, string>>
 
 export interface PassengerFormProps {
   seats: BookingSeat[]
+  departureDate: string
   onContinue: (passengers: PassengerDetails[]) => void | Promise<void>
   isSubmitting?: boolean
 }
@@ -46,9 +53,33 @@ const emptyPassenger: PassengerFormValues = {
   phone: '',
   email: '',
   type: 'adult',
+  dateOfBirth: '',
+  studentId: '',
+  schoolName: '',
 }
 
-function validatePassenger(values: PassengerFormValues): PassengerErrors {
+function getAgeAtDeparture(dateOfBirth: string, departureDate: string) {
+  const birthParts = dateOfBirth.split('-').map(Number)
+  const departureParts = departureDate.split('-').map(Number)
+  if (birthParts.length !== 3 || departureParts.length !== 3 ||
+      [...birthParts, ...departureParts].some((part) => !Number.isInteger(part))) return null
+
+  const [birthYear, birthMonth, birthDay] = birthParts
+  const [departureYear, departureMonth, departureDay] = departureParts
+  const birth = new Date(Date.UTC(birthYear, birthMonth - 1, birthDay))
+  const departure = new Date(Date.UTC(departureYear, departureMonth - 1, departureDay))
+  if (
+    birth.getUTCFullYear() !== birthYear || birth.getUTCMonth() !== birthMonth - 1 || birth.getUTCDate() !== birthDay ||
+    departure.getUTCFullYear() !== departureYear || departure.getUTCMonth() !== departureMonth - 1 || departure.getUTCDate() !== departureDay ||
+    birth > departure
+  ) return null
+
+  let age = departureYear - birthYear
+  if (departureMonth < birthMonth || (departureMonth === birthMonth && departureDay < birthDay)) age -= 1
+  return age
+}
+
+function validatePassenger(values: PassengerFormValues, departureDate: string): PassengerErrors {
   const errors: PassengerErrors = {}
   const fullName = values.fullName.trim()
   const phone = values.phone.trim()
@@ -72,10 +103,28 @@ function validatePassenger(values: PassengerFormValues): PassengerErrors {
     errors.email = 'Email không đúng định dạng, ví dụ ten@example.com.'
   }
 
+  if (values.type === 'child') {
+    if (!values.dateOfBirth) {
+      errors.dateOfBirth = 'Vui lòng nhập ngày sinh của hành khách.'
+    } else {
+      const age = getAgeAtDeparture(values.dateOfBirth, departureDate)
+      if (age === null) {
+        errors.dateOfBirth = 'Ngày sinh không hợp lệ hoặc sau ngày khởi hành.'
+      } else if (age >= 12) {
+        errors.dateOfBirth = 'Hành khách từ 12 tuổi trở lên phải chọn vé Người lớn'
+      }
+    }
+  }
+
+  if (values.type === 'student') {
+    if (!values.studentId.trim()) errors.studentId = 'Vui lòng nhập mã số sinh viên.'
+    if (!values.schoolName.trim()) errors.schoolName = 'Vui lòng nhập tên trường Đại học/Cao đẳng.'
+  }
+
   return errors
 }
 
-export function PassengerForm({ seats, onContinue, isSubmitting = false }: PassengerFormProps) {
+export function PassengerForm({ seats, departureDate, onContinue, isSubmitting = false }: PassengerFormProps) {
   const [valuesBySeatId, setValuesBySeatId] = useState<Record<string, PassengerFormValues>>(() =>
     Object.fromEntries(seats.map((seat) => [seat.id, { ...emptyPassenger }])),
   )
@@ -98,10 +147,10 @@ export function PassengerForm({ seats, onContinue, isSubmitting = false }: Passe
     () => Object.fromEntries(
       seats.map((seat) => [
         seat.id,
-        validatePassenger(valuesBySeatId[seat.id] ?? emptyPassenger),
+        validatePassenger(valuesBySeatId[seat.id] ?? emptyPassenger, departureDate),
       ]),
     ) as Record<string, PassengerErrors>,
-    [seats, valuesBySeatId],
+    [departureDate, seats, valuesBySeatId],
   )
 
   const isValid = seats.length > 0 && seats.every((seat) =>
@@ -127,7 +176,12 @@ export function PassengerForm({ seats, onContinue, isSubmitting = false }: Passe
   }
 
   function getVisibleError(seatId: string, field: PassengerField) {
-    return touchedBySeatId[seatId]?.[field] ? errorsBySeatId[seatId]?.[field] : undefined
+    const values = valuesBySeatId[seatId] ?? emptyPassenger
+    const isConditionalField = (field === 'dateOfBirth' && values.type === 'child') ||
+      ((field === 'studentId' || field === 'schoolName') && values.type === 'student')
+    return isConditionalField || touchedBySeatId[seatId]?.[field]
+      ? errorsBySeatId[seatId]?.[field]
+      : undefined
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -256,6 +310,83 @@ export function PassengerForm({ seats, onContinue, isSubmitting = false }: Passe
                 ))}
               </select>
             </div>
+
+            {values.type === 'child' && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor={`passenger-dob-${seat.id}`}>
+                  Ngày / Tháng / Năm sinh
+                </label>
+                <input
+                  className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none transition focus:ring-2 ${getVisibleError(seat.id, 'dateOfBirth') ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : 'border-slate-300 focus:border-emerald-600 focus:ring-emerald-100'}`}
+                  id={`passenger-dob-${seat.id}`}
+                  type="date"
+                  max={departureDate}
+                  value={values.dateOfBirth}
+                  aria-invalid={Boolean(getVisibleError(seat.id, 'dateOfBirth'))}
+                  aria-describedby={getVisibleError(seat.id, 'dateOfBirth') ? `passenger-dob-error-${seat.id}` : undefined}
+                  onBlur={() => markTouched(seat.id, 'dateOfBirth')}
+                  onChange={(event) => updateField(seat.id, 'dateOfBirth', event.target.value)}
+                  required
+                />
+                {getVisibleError(seat.id, 'dateOfBirth') && (
+                  <p className="mt-1 text-sm text-red-600" id={`passenger-dob-error-${seat.id}`}>
+                    {getVisibleError(seat.id, 'dateOfBirth')}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {values.type === 'student' && (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor={`passenger-student-id-${seat.id}`}>
+                      Mã số sinh viên (MSSV)
+                    </label>
+                    <input
+                      className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none transition focus:ring-2 ${getVisibleError(seat.id, 'studentId') ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : 'border-slate-300 focus:border-emerald-600 focus:ring-emerald-100'}`}
+                      id={`passenger-student-id-${seat.id}`}
+                      value={values.studentId}
+                      maxLength={50}
+                      aria-invalid={Boolean(getVisibleError(seat.id, 'studentId'))}
+                      aria-describedby={getVisibleError(seat.id, 'studentId') ? `passenger-student-id-error-${seat.id}` : undefined}
+                      onBlur={() => markTouched(seat.id, 'studentId')}
+                      onChange={(event) => updateField(seat.id, 'studentId', event.target.value)}
+                      required
+                    />
+                    {getVisibleError(seat.id, 'studentId') && (
+                      <p className="mt-1 text-sm text-red-600" id={`passenger-student-id-error-${seat.id}`}>
+                        {getVisibleError(seat.id, 'studentId')}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor={`passenger-school-${seat.id}`}>
+                      Tên trường Đại học/Cao đẳng
+                    </label>
+                    <input
+                      className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none transition focus:ring-2 ${getVisibleError(seat.id, 'schoolName') ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : 'border-slate-300 focus:border-emerald-600 focus:ring-emerald-100'}`}
+                      id={`passenger-school-${seat.id}`}
+                      value={values.schoolName}
+                      maxLength={150}
+                      aria-invalid={Boolean(getVisibleError(seat.id, 'schoolName'))}
+                      aria-describedby={getVisibleError(seat.id, 'schoolName') ? `passenger-school-error-${seat.id}` : undefined}
+                      onBlur={() => markTouched(seat.id, 'schoolName')}
+                      onChange={(event) => updateField(seat.id, 'schoolName', event.target.value)}
+                      required
+                    />
+                    {getVisibleError(seat.id, 'schoolName') && (
+                      <p className="mt-1 text-sm text-red-600" id={`passenger-school-error-${seat.id}`}>
+                        {getVisibleError(seat.id, 'schoolName')}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <p className="text-sm text-orange-700">
+                  Lưu ý: Cần xuất trình Thẻ Sinh viên chính chủ còn hạn khi soát vé tại ga.
+                </p>
+              </div>
+            )}
           </fieldset>
         )
       })}

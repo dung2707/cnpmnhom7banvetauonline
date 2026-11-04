@@ -6,6 +6,7 @@ export interface CreateBookingInput {
   tripId: string
   tripCode: string
   tripDate: string
+  departureTime: string
   origin: string
   destination: string
   contactEmail: string
@@ -33,6 +34,9 @@ export interface SavedPassengerRecord {
   phone: string
   email: string
   passenger_type: PassengerType
+  date_of_birth: string | null
+  student_id: string | null
+  school_name: string | null
   base_fare: number
   discount_rate: number
   final_fare: number
@@ -77,6 +81,16 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function isValidDateOnly(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
 export async function createBooking(input: CreateBookingInput): Promise<BookingRecord> {
   try {
     if (!input.bookingCode.trim() || !input.tripId.trim() || !input.tripCode.trim()) {
@@ -84,6 +98,9 @@ export async function createBooking(input: CreateBookingInput): Promise<BookingR
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(input.tripDate)) {
       throw new Error('Ngày khởi hành không đúng định dạng YYYY-MM-DD.')
+    }
+    if (Number.isNaN(Date.parse(input.departureTime))) {
+      throw new Error('Giờ khởi hành không hợp lệ.')
     }
     if (!Number.isFinite(input.totalAmount) || input.totalAmount <= 0) {
       throw new Error('Tổng tiền đặt vé phải lớn hơn 0.')
@@ -99,6 +116,7 @@ export async function createBooking(input: CreateBookingInput): Promise<BookingR
         trip_id: input.tripId,
         trip_code: input.tripCode.trim(),
         trip_date: input.tripDate,
+        departure_time: input.departureTime,
         origin: input.origin.trim(),
         destination: input.destination.trim(),
         contact_email: input.contactEmail.trim(),
@@ -120,10 +138,14 @@ export async function createBooking(input: CreateBookingInput): Promise<BookingR
 export async function savePassengers(
   bookingId: string,
   passengers: BookingPassengerInput[],
+  departureDate: string,
 ): Promise<SavedPassengerRecord[]> {
   try {
     if (!bookingId.trim()) throw new Error('Thiếu mã đặt vé.')
     if (passengers.length === 0) throw new Error('Đặt vé phải có ít nhất một hành khách.')
+    if (!isValidDateOnly(departureDate)) {
+      throw new Error('Ngày khởi hành không hợp lệ để xác thực loại hành khách.')
+    }
 
     const passengerRows = passengers.map((passenger) => {
       if (!passenger.seatId.trim() || !passenger.fullName.trim()) {
@@ -138,6 +160,28 @@ export async function savePassengers(
       if (!Number.isFinite(passenger.baseFare) || passenger.baseFare <= 0) {
         throw new Error(`Giá vé của ghế ${passenger.seatNumber} không hợp lệ.`)
       }
+      if (passenger.type === 'child') {
+        const dateOfBirth = passenger.dateOfBirth ?? ''
+        if (!isValidDateOnly(dateOfBirth)) {
+          throw new Error(`Ngày sinh của ${passenger.fullName} không hợp lệ.`)
+        }
+        const [birthYear, birthMonth, birthDay] = dateOfBirth.split('-').map(Number)
+        const [departureYear, departureMonth, departureDay] = departureDate.split('-').map(Number)
+        const birthDate = new Date(Date.UTC(birthYear, birthMonth - 1, birthDay))
+        const tripDate = new Date(Date.UTC(departureYear, departureMonth - 1, departureDay))
+        if (
+          birthDate.getUTCFullYear() !== birthYear || birthDate.getUTCMonth() !== birthMonth - 1 || birthDate.getUTCDate() !== birthDay ||
+          birthDate > tripDate
+        ) {
+          throw new Error(`Ngày sinh của ${passenger.fullName} không hợp lệ hoặc sau ngày khởi hành.`)
+        }
+        let age = departureYear - birthYear
+        if (departureMonth < birthMonth || (departureMonth === birthMonth && departureDay < birthDay)) age -= 1
+        if (age >= 12) throw new Error('Hành khách từ 12 tuổi trở lên phải chọn vé Người lớn')
+      }
+      if (passenger.type === 'student' && (!passenger.studentId?.trim() || !passenger.schoolName?.trim())) {
+        throw new Error(`Vui lòng nhập MSSV và tên trường của ${passenger.fullName}.`)
+      }
 
       const discountRate = discountRates[passenger.type]
       const baseFare = Math.round(passenger.baseFare)
@@ -150,6 +194,9 @@ export async function savePassengers(
         phone: passenger.phone.trim(),
         email: passenger.email.trim(),
         passenger_type: passenger.type,
+        date_of_birth: passenger.type === 'child' ? passenger.dateOfBirth : null,
+        student_id: passenger.type === 'student' ? passenger.studentId?.trim() : null,
+        school_name: passenger.type === 'student' ? passenger.schoolName?.trim() : null,
         base_fare: baseFare,
         discount_rate: discountRate,
         final_fare: baseFare - Math.round(baseFare * discountRate),
@@ -159,7 +206,7 @@ export async function savePassengers(
     const { data, error } = await supabase
       .from('booking_passengers')
       .insert(passengerRows)
-      .select('id, booking_id, seat_id, full_name, phone, email, passenger_type, base_fare, discount_rate, final_fare')
+      .select('id, booking_id, seat_id, full_name, phone, email, passenger_type, date_of_birth, student_id, school_name, base_fare, discount_rate, final_fare')
 
     if (error) throw error
     if (!data || data.length !== passengerRows.length) {

@@ -7,12 +7,14 @@ import { TrainCarriageBar } from './TrainCarriageBar'
 import { trainCarriages } from '../data/trainCarriages'
 import { BookingSummary, type BookingSummaryResult } from './booking/BookingSummary'
 import { PassengerForm, type PassengerDetails } from './booking/PassengerForm'
-import { PaymentPage } from './payment/PaymentPage'
+import { defaultVietQrBankConfig, PaymentPage } from './payment/PaymentPage'
 import { BookingHistory } from './booking/BookingHistory'
 import { createBooking, savePassengers, type BookingRecord } from '../services/bookingService'
+import { generateTripsForDate, seededRandom, stations } from '../services/tripSchedule'
+import { TicketCancelForm } from './booking/TicketCancelForm'
 
 type Trip = (typeof trips)[number]
-type ScheduledTrip = Trip & { id: string; scheduleDate: string }
+type ScheduledTrip = ReturnType<typeof generateTripsForDate>[number]
 type SearchErrors = { origin?: string; destination?: string; date?: string; returnDate?: string }
 type SelectedPlace = { id: string; carNumber: number; seatNumber: number; price: number }
 type SeatRow = {
@@ -66,22 +68,6 @@ const addOnServices = [
 ] as const
 type AddOnId = (typeof addOnServices)[number]['id']
 const totalFallbackSeatCapacity = trainCarriages.reduce((total, carriage) => total + carriage.seatNumbers.length, 0)
-const paymentBankConfig = {
-  bankId: import.meta.env.VITE_VIETQR_BANK_ID ?? '',
-  accountNumber: import.meta.env.VITE_VIETQR_ACCOUNT_NUMBER ?? '',
-  accountName: import.meta.env.VITE_VIETQR_ACCOUNT_NAME ?? '',
-}
-
-const stations = [
-  { name: 'Hà Nội', latitude: 21.0245, longitude: 105.8412 },
-  { name: 'Nam Định', latitude: 20.4286, longitude: 106.1683 },
-  { name: 'Vinh', latitude: 18.6796, longitude: 105.6813 },
-  { name: 'Huế', latitude: 16.4637, longitude: 107.5909 },
-  { name: 'Đà Nẵng', latitude: 16.068, longitude: 108.212 },
-  { name: 'Nha Trang', latitude: 12.2486, longitude: 109.1848 },
-  { name: 'Sài Gòn', latitude: 10.7811, longitude: 106.6782 },
-]
-
 function getDistanceInKm(latitude: number, longitude: number, stationLatitude: number, stationLongitude: number) {
   const earthRadiusKm = 6371
   const toRadians = (degrees: number) => degrees * Math.PI / 180
@@ -126,74 +112,6 @@ function getDateString(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
-}
-
-function seededRandom(seed: string) {
-  let value = 2166136261
-  for (const character of seed) {
-    value ^= character.charCodeAt(0)
-    value = Math.imul(value, 16777619)
-  }
-  return () => {
-    value += 0x6d2b79f5
-    let next = value
-    next = Math.imul(next ^ (next >>> 15), next | 1)
-    next ^= next + Math.imul(next ^ (next >>> 7), next | 61)
-    return ((next ^ (next >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-function generateTripsForDate(origin: string, destination: string, date: string): ScheduledTrip[] {
-  const random = seededRandom(`${origin}|${destination}|${date}`)
-  const originIndex = stations.findIndex((station) => station.name === origin)
-  const destinationIndex = stations.findIndex((station) => station.name === destination)
-  const routeStations = stations
-    .slice(Math.min(originIndex, destinationIndex), Math.max(originIndex, destinationIndex) + 1)
-    .map((station) => station.name)
-  if (originIndex > destinationIndex) routeStations.reverse()
-
-  const generatedTemplates = [...trips]
-    .sort(() => random() - 0.5)
-    .slice(0, 4)
-  const fullTripIndex = Math.floor(random() * generatedTemplates.length)
-  const generatedSeatCounts = new Set<number>([0])
-
-  return generatedTemplates.map((template, index) => {
-      const departureMinutes = Math.floor(random() * 24 * 60)
-      const durationMinutes = Math.max(120, Math.round(template.durationMinutes * (0.8 + random() * 0.4)))
-      const arrivalMinutes = departureMinutes + durationMinutes
-      const departureTime = `${String(Math.floor(departureMinutes / 60)).padStart(2, '0')}:${String(departureMinutes % 60).padStart(2, '0')}`
-      const arrivalTime = `${String(Math.floor(arrivalMinutes / 60) % 24).padStart(2, '0')}:${String(arrivalMinutes % 60).padStart(2, '0')}`
-      const minimumPrice = Math.round(template.minimumPrice * (0.85 + random() * 0.3) / 1000) * 1000
-      const maximumPrice = Math.max(minimumPrice, Math.round(template.maximumPrice * (0.85 + random() * 0.3) / 1000) * 1000)
-      let availableSeats = 0
-      if (index !== fullTripIndex) {
-        do {
-          availableSeats = 5 + Math.floor(random() * 176)
-        } while (generatedSeatCounts.has(availableSeats))
-        generatedSeatCounts.add(availableSeats)
-      }
-      const routeSuffix = `${originIndex + 1}${destinationIndex + 1}`
-      return {
-        ...template,
-        id: `${template.code}-${routeSuffix}-${date}`,
-        code: `${template.code}-${routeSuffix}`,
-        origin,
-        destination,
-        departureTime,
-        arrivalTime,
-        arrivalDayOffset: Math.floor(arrivalMinutes / (24 * 60)),
-        durationMinutes,
-        minimumPrice,
-        maximumPrice,
-        availableSeats,
-        stops: routeStations.map((station, index) => ({
-          station,
-          time: index === 0 ? departureTime : index === routeStations.length - 1 ? arrivalTime : departureTime,
-        })),
-        scheduleDate: date,
-      }
-    })
 }
 
 function readLocalValue<T>(key: string, fallback: T): T {
@@ -253,7 +171,9 @@ function createFallbackSeats(
 export function HomePage() {
   const { user, signOut } = useAuth()
   const [activeView, setActiveView] = useState(() =>
-    window.location.hash === '#lich-su' || window.location.hash === '#history' ? 'history' : 'home',
+    window.location.hash === '#lich-su' || window.location.hash === '#history'
+      ? 'history'
+      : window.location.hash === '#huy-ve' ? 'cancel' : 'home',
   )
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
@@ -355,7 +275,9 @@ export function HomePage() {
 
   useEffect(() => {
     const updateView = () => {
-      setActiveView(window.location.hash === '#lich-su' || window.location.hash === '#history' ? 'history' : 'home')
+      setActiveView(window.location.hash === '#lich-su' || window.location.hash === '#history'
+        ? 'history'
+        : window.location.hash === '#huy-ve' ? 'cancel' : 'home')
     }
 
     window.addEventListener('hashchange', updateView)
@@ -846,6 +768,7 @@ export function HomePage() {
           tripId: selectedTrip.id,
           tripCode: selectedTrip.code,
           tripDate: selectedTrip.scheduleDate,
+          departureTime: new Date(`${selectedTrip.scheduleDate}T${selectedTrip.departureTime}:00`).toISOString(),
           origin: selectedTrip.origin,
           destination: selectedTrip.destination,
           contactEmail: bookingPassengers[0]?.email ?? '',
@@ -864,7 +787,7 @@ export function HomePage() {
           baseFare: seat.price,
         }
       })
-      await savePassengers(booking.id, passengersToSave)
+      await savePassengers(booking.id, passengersToSave, selectedTrip.scheduleDate)
       setBookingStep('payment')
     } catch (error) {
       setBookingError(error instanceof Error ? error.message : 'Không thể tạo đặt vé. Vui lòng thử lại.')
@@ -1088,6 +1011,7 @@ export function HomePage() {
         <nav className="home-nav" aria-label="Điều hướng chính">
           <a className={activeView === 'home' ? 'nav-active' : undefined} aria-current={activeView === 'home' ? 'page' : undefined} href="#dat-ve">Vé tàu</a>
           <a className={activeView === 'history' ? 'nav-active' : undefined} aria-current={activeView === 'history' ? 'page' : undefined} href="#lich-su">Lịch sử đặt vé</a>
+          <a className={activeView === 'cancel' ? 'nav-active' : undefined} aria-current={activeView === 'cancel' ? 'page' : undefined} href="#huy-ve">Hủy vé trực tuyến</a>
         </nav>
         <div className="notification-center">
           <button
@@ -1135,7 +1059,9 @@ export function HomePage() {
           </button>
         </div>
       </header>
-      {activeView === 'history' ? <BookingHistory /> : <>
+      {activeView === 'history' ? <BookingHistory /> : activeView === 'cancel' ? (
+        <TicketCancelForm onNavigateToHistory={() => { window.location.hash = '#lich-su' }} />
+      ) : <>
       <section className="home-hero">
         <div className="home-hero-content">
           <span className="eyebrow">Xin chào, {user?.displayName}</span>
@@ -1420,6 +1346,7 @@ export function HomePage() {
                         ...place,
                         carriageTitle: trainCarriages.find((carriage) => carriage.number === place.carNumber)?.title,
                       }))}
+                      departureDate={selectedTrip.scheduleDate}
                       onContinue={(passengers) => {
                         setBookingPassengers(passengers)
                         setBookingError('')
@@ -1452,7 +1379,7 @@ export function HomePage() {
                           bookingId={bookingRecord.id}
                           bookingCode={bookingRecord.booking_code}
                           totalAmount={bookingRecord.total_amount}
-                          bankConfig={paymentBankConfig}
+                          bankConfig={defaultVietQrBankConfig}
                         />
                       )}
                     </>

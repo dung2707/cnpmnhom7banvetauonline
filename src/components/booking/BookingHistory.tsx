@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CalendarDays, ChevronDown, Clock3, RotateCw, Ticket, TrainFront, Users } from 'lucide-react'
+import { CalendarDays, ChevronDown, Clock3, QrCode, RotateCw, Ticket, TrainFront, Users, X } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext'
 import { supabase } from '../../lib/supabase'
+import { PaymentPage, defaultVietQrBankConfig } from '../payment/PaymentPage'
+import { ETicketModal } from './ETicketModal'
 
 interface BookingPassenger {
   id: string
@@ -43,12 +45,15 @@ function getStatus(booking: Booking) {
     return 'paid'
   }
 
+  if (paymentStatuses.includes('pending_verification')) return 'verification'
+
   return 'pending'
 }
 
 const statusLabels = {
   paid: 'Đã thanh toán',
   pending: 'Chờ thanh toán',
+  verification: 'Chờ xác nhận thanh toán',
   cancelled: 'Đã hủy',
 } as const
 
@@ -68,8 +73,8 @@ export function BookingHistory() {
   const [bookings, setBookings] = useState<Booking[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [loadingError, setLoadingError] = useState('')
-  const [cancelError, setCancelError] = useState('')
-  const [cancellingBookingId, setCancellingBookingId] = useState<string | null>(null)
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null)
+  const [selectedPaymentBookingId, setSelectedPaymentBookingId] = useState<string | null>(null)
 
   const loadBookings = useCallback(async () => {
     setIsLoading(true)
@@ -124,36 +129,6 @@ export function BookingHistory() {
     void loadBookings()
   }, [loadBookings])
 
-  async function cancelBooking(booking: Booking) {
-    if (cancellingBookingId || getStatus(booking) === 'cancelled') return
-    if (!window.confirm(`Bạn có chắc muốn hủy vé ${booking.booking_code}?`)) return
-
-    setCancellingBookingId(booking.id)
-    setCancelError('')
-    try {
-      let query = supabase
-        .from('bookings')
-        .update({ status: 'cancelled' })
-        .eq('id', booking.id)
-
-      if (user?.email?.toLocaleLowerCase('vi') !== demoEmail && user?.email) {
-        query = query.eq('contact_email', user.email)
-      }
-
-      const { data, error } = await query.select('id').maybeSingle()
-      if (error) throw error
-      if (!data) throw new Error('Không tìm thấy vé phù hợp để hủy.')
-
-      setBookings((current) => current.map((item) =>
-        item.id === booking.id ? { ...item, status: 'cancelled' } : item,
-      ))
-    } catch (error) {
-      setCancelError(error instanceof Error ? error.message : 'Không thể hủy vé. Vui lòng thử lại.')
-    } finally {
-      setCancellingBookingId(null)
-    }
-  }
-
   return (
     <section className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8" aria-labelledby="booking-history-title">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -172,12 +147,6 @@ export function BookingHistory() {
           Làm mới
         </button>
       </header>
-
-      {cancelError && (
-        <p className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
-          {cancelError}
-        </p>
-      )}
 
       {isLoading ? (
         <div className="space-y-4" aria-label="Đang tải lịch sử đặt vé" aria-busy="true">
@@ -235,10 +204,12 @@ export function BookingHistory() {
                   </div>
                   <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
                     status === 'paid' ? 'bg-emerald-50 text-emerald-800'
+                      : status === 'verification' ? 'bg-blue-50 text-blue-800'
                       : status === 'cancelled' ? 'bg-slate-100 text-slate-600'
                         : 'bg-amber-50 text-amber-800'
                   }`}>
                     {status === 'paid' ? <Ticket className="mr-1 inline" size={13} />
+                      : status === 'verification' ? <Clock3 className="mr-1 inline" size={13} />
                       : status === 'cancelled' ? null : <Clock3 className="mr-1 inline" size={13} />}
                     {statusLabels[status]}
                   </span>
@@ -285,20 +256,70 @@ export function BookingHistory() {
                   ) : <span className="text-sm text-slate-500">Chưa có thông tin hành khách.</span>}
 
                   {status !== 'cancelled' && (
-                    <button
-                      className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                      type="button"
-                      disabled={cancellingBookingId !== null}
-                      onClick={() => void cancelBooking(booking)}
-                    >
-                      {cancellingBookingId === booking.id ? 'Đang hủy...' : 'Hủy vé'}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      {status === 'pending' && (
+                        <button
+                          className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-800"
+                          type="button"
+                          onClick={() => setSelectedPaymentBookingId((current) => current === booking.id ? null : booking.id)}
+                          aria-expanded={selectedPaymentBookingId === booking.id}
+                        >
+                          <QrCode size={16} />
+                          {selectedPaymentBookingId === booking.id ? 'Đóng thanh toán' : 'Thanh toán ngay'}
+                        </button>
+                      )}
+                      {status === 'paid' && (
+                        <button
+                          className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-white px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
+                          type="button"
+                          onClick={() => setSelectedTicketId(booking.id)}
+                        >
+                          <QrCode size={16} />
+                          Vé điện tử
+                        </button>
+                      )}
+                      <button
+                        className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50"
+                        type="button"
+                        onClick={() => { window.location.hash = '#huy-ve' }}
+                      >
+                        Hủy vé trực tuyến
+                      </button>
+                    </div>
                   )}
                 </div>
+                {selectedPaymentBookingId === booking.id && status === 'pending' && (
+                  <div className="border-t border-slate-100 bg-slate-50 p-4 sm:p-6">
+                    <div className="mx-auto mb-4 flex w-full max-w-3xl items-center justify-between gap-3">
+                      <h3 className="font-semibold text-slate-900">Thanh toán đơn {booking.booking_code}</h3>
+                      <button
+                        aria-label="Đóng thanh toán"
+                        className="rounded-lg p-2 text-slate-500 transition hover:bg-white hover:text-slate-900"
+                        type="button"
+                        onClick={() => setSelectedPaymentBookingId(null)}
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <PaymentPage
+                      bookingId={booking.id}
+                      bookingCode={booking.booking_code}
+                      totalAmount={Number(booking.total_amount)}
+                      bankConfig={defaultVietQrBankConfig}
+                      onPaymentSubmitted={() => {
+                        setSelectedPaymentBookingId(null)
+                        void loadBookings()
+                      }}
+                    />
+                  </div>
+                )}
               </article>
             )
           })}
         </div>
+      )}
+      {selectedTicketId && (
+        <ETicketModal bookingId={selectedTicketId} onClose={() => setSelectedTicketId(null)} />
       )}
     </section>
   )

@@ -8,6 +8,12 @@ export interface VietQrBankConfig {
   accountName: string
 }
 
+export const defaultVietQrBankConfig: VietQrBankConfig = {
+  bankId: import.meta.env.VITE_VIETQR_BANK_ID || 'MB',
+  accountNumber: import.meta.env.VITE_VIETQR_ACCOUNT_NUMBER || '0988888888',
+  accountName: import.meta.env.VITE_VIETQR_ACCOUNT_NAME || 'DUONG SAT VIETNAM VIETRAIL',
+}
+
 export interface PaymentPageProps {
   bookingId: string
   bookingCode: string
@@ -75,7 +81,7 @@ export function PaymentPage({
   }
 
   return (
-    <main className="mx-auto w-full max-w-3xl space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
+    <section aria-label={`Thanh toán đơn ${bookingCode}`} className="mx-auto w-full max-w-3xl space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
       <header>
         <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">US05 · Thanh toán</p>
         <h1 className="mt-1 text-2xl font-bold text-slate-900">Hoàn tất thanh toán</h1>
@@ -116,18 +122,18 @@ export function PaymentPage({
       </fieldset>
 
       {paymentMethod === 'vietqr' ? (
-        <section className="grid gap-5 rounded-2xl border border-slate-200 p-4 sm:grid-cols-[1fr_auto] sm:items-center sm:p-5">
-          <div className="space-y-3 text-sm">
-            <h2 className="font-semibold text-slate-900">Thông tin chuyển khoản</h2>
-            <p className="flex items-start gap-2 text-slate-700"><Landmark size={18} className="mt-0.5 shrink-0" aria-hidden="true" />Ngân hàng: {bankConfig.bankId || 'Chưa cấu hình'}</p>
-            <p className="text-slate-700">Số tài khoản: <strong>{bankConfig.accountNumber || 'Chưa cấu hình'}</strong></p>
-            <p className="text-slate-700">Chủ tài khoản: <strong>{bankConfig.accountName || 'Chưa cấu hình'}</strong></p>
-            <p className="text-slate-700">Nội dung chuyển khoản: <strong>{bookingCode}</strong></p>
+        <section className="space-y-5 rounded-2xl border border-slate-200 p-4 sm:p-6">
+          <div className="text-center">
+            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-4 py-2 text-lg font-bold text-emerald-800">
+              <QrCode size={22} aria-hidden="true" />
+              VietQR
+            </div>
+            <h2 className="mt-3 font-semibold text-slate-900">Quét mã để thanh toán</h2>
           </div>
           {isBankConfigValid ? (
             <img
               alt={`Mã VietQR thanh toán ${formatCurrency(totalAmount)} cho đặt vé ${bookingCode}`}
-              className="mx-auto aspect-square w-52 rounded-xl border border-slate-200 bg-white object-contain p-2"
+              className="mx-auto aspect-square w-64 max-w-full rounded-xl border border-slate-200 bg-white object-contain p-2"
               src={qrUrl}
             />
           ) : (
@@ -135,6 +141,17 @@ export function PaymentPage({
               Cần cấu hình mã ngân hàng, số tài khoản và tên chủ tài khoản để tạo VietQR.
             </p>
           )}
+          <div className="mx-auto w-full max-w-xl space-y-3 rounded-xl bg-slate-50 p-4 text-sm sm:p-5">
+            <h3 className="font-semibold text-slate-900">Thông tin chuyển khoản</h3>
+            <p className="flex items-start gap-2 text-slate-700">
+              <Landmark size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+              <span>Ngân hàng: <strong>{bankConfig.bankId === 'MB' ? 'MBBank (Ngân hàng TMCP Quân Đội)' : bankConfig.bankId}</strong></span>
+            </p>
+            <p className="text-slate-700">Số tài khoản: <strong>{bankConfig.accountNumber || 'Chưa cấu hình'}</strong></p>
+            <p className="text-slate-700">Chủ tài khoản: <strong>{bankConfig.accountName || 'Chưa cấu hình'}</strong></p>
+            <p className="text-slate-700">Nội dung chuyển khoản: <strong>{bookingCode}</strong></p>
+            <p className="text-slate-700">Số tiền cần thanh toán: <strong className="text-emerald-800">{formatCurrency(totalAmount)}</strong></p>
+          </div>
         </section>
       ) : (
         <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="status">
@@ -164,6 +181,6 @@ export function PaymentPage({
         {isLoading && <LoaderCircle size={18} className="animate-spin" aria-hidden="true" />}
         {isLoading ? 'Đang gửi yêu cầu...' : paymentSubmitted ? 'Đã gửi yêu cầu xác nhận' : 'Xác nhận đã chuyển khoản'}
       </button>
-    </main>
+    </section>
   )
 }
