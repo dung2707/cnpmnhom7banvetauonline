@@ -1,34 +1,33 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ArrowLeftRight, Bell, BellRing, CalendarDays, Check, ChevronDown, Clock3, LogOut, MapPin, TrainFront, Users, Utensils, X } from 'lucide-react'
+import { Bell, BellRing, Check, Clock3, LogOut, TrainFront, X } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import trips from '../data/trips.json'
 import { supabase } from '../lib/supabase'
 import { TrainCarriageBar } from './TrainCarriageBar'
 import { trainCarriages } from '../data/trainCarriages'
 import { BookingSummary, type BookingSummaryResult } from './booking/BookingSummary'
-import { PassengerForm, type PassengerDetails } from './booking/PassengerForm'
+import { PassengerForm } from './booking/PassengerForm'
 import { defaultVietQrBankConfig, PaymentPage } from './payment/PaymentPage'
 import { BookingHistory } from './booking/BookingHistory'
-import { createBooking, savePassengers, type BookingRecord } from '../services/bookingService'
+import { createBooking, savePassengers } from '../services/bookingService'
 import { generateTripsForDate, seededRandom, stations } from '../services/tripSchedule'
 import { TicketCancelForm } from './booking/TicketCancelForm'
+import { SearchTrainForm, type SearchErrors } from './SearchTrainForm'
+import { TrainList } from './TrainList'
+import { SeatMap } from './SeatMap'
+import type {
+  AddOnService,
+  BookingRecord,
+  PassengerCounts,
+  PassengerDetails,
+  ScheduledTrip,
+  SeatHold,
+  SeatRow,
+  SelectedPlace,
+} from '../types'
+import { formatDate, formatPrice } from '../utils/format'
 
 type Trip = (typeof trips)[number]
-type ScheduledTrip = ReturnType<typeof generateTripsForDate>[number]
-type SearchErrors = { origin?: string; destination?: string; date?: string; returnDate?: string }
-type SelectedPlace = { id: string; carNumber: number; seatNumber: number; price: number }
-type SeatRow = {
-  id: string
-  carriage_id: string
-  seat_number: number
-  price: number
-  status: 'available' | 'held' | 'booked'
-  isFallback?: boolean
-  trip_code?: string
-  trip_id?: string
-  trip_date?: string
-}
-type SeatHold = { id: string; seat_id: string; session_id: string; expires_at: string }
 type Toast = { message: string; kind: 'error' | 'warning' | 'success'; notification?: TripNotification }
 type TripNotification = {
   id: string
@@ -49,24 +48,16 @@ type TripNotificationRequest = {
   destination: string
   userEmail: string
 }
-type PassengerType = 'adult' | 'child' | 'student' | 'senior'
-type PassengerCounts = Record<PassengerType, number>
 type BookingStep = 'seats' | 'passengers' | 'summary' | 'payment'
 const HOLD_DURATION_MS = 10 * 60 * 1000
 const SESSION_STORAGE_KEY = 'duongsat.seat-session-id'
 const NOTIFICATION_STORAGE_KEY = 'duongsat.notifications'
 const REQUEST_STORAGE_KEY = 'duongsat.trip-notifications'
-const passengerTypes: { id: PassengerType; label: string; note: string; minimum: number }[] = [
-  { id: 'adult', label: 'Người lớn', note: 'Từ 12 tuổi', minimum: 1 },
-  { id: 'child', label: 'Trẻ em', note: 'Giảm vé', minimum: 0 },
-  { id: 'student', label: 'Sinh viên', note: 'Giảm vé', minimum: 0 },
-  { id: 'senior', label: 'Người cao tuổi', note: 'Giảm vé', minimum: 0 },
-]
-const addOnServices = [
+const addOnServices: readonly AddOnService[] = [
   { id: 'vipLounge', label: 'Phòng chờ VIP ga Sài Gòn / Hà Nội', price: 20000 },
   { id: 'meal', label: 'Suất ăn nhẹ trên tàu', price: 35000 },
-] as const
-type AddOnId = (typeof addOnServices)[number]['id']
+]
+type AddOnId = AddOnService['id']
 const totalFallbackSeatCapacity = trainCarriages.reduce((total, carriage) => total + carriage.seatNumbers.length, 0)
 function getDistanceInKm(latitude: number, longitude: number, stationLatitude: number, stationLongitude: number) {
   const earthRadiusKm = 6371
@@ -77,25 +68,6 @@ function getDistanceInKm(latitude: number, longitude: number, stationLatitude: n
     Math.cos(toRadians(latitude)) * Math.cos(toRadians(stationLatitude)) *
     Math.sin(longitudeDifference / 2) ** 2
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
-}
-
-function formatDate(date: string) {
-  return new Intl.DateTimeFormat('vi-VN', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }).format(new Date(`${date}T12:00:00`))
-}
-
-function formatDuration(minutes: number) {
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-  return `${hours} giờ${remainingMinutes ? ` ${remainingMinutes} phút` : ''}`
-}
-
-function formatPrice(price: number) {
-  return new Intl.NumberFormat('vi-VN').format(price)
 }
 
 function getOrCreateSessionId() {
@@ -175,6 +147,7 @@ export function HomePage() {
       ? 'history'
       : window.location.hash === '#huy-ve' ? 'cancel' : 'home',
   )
+  const [cancellationBookingCode, setCancellationBookingCode] = useState('')
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
   const [departureDate, setDepartureDate] = useState('')
@@ -275,9 +248,11 @@ export function HomePage() {
 
   useEffect(() => {
     const updateView = () => {
-      setActiveView(window.location.hash === '#lich-su' || window.location.hash === '#history'
+      const nextView = window.location.hash === '#lich-su' || window.location.hash === '#history'
         ? 'history'
-        : window.location.hash === '#huy-ve' ? 'cancel' : 'home')
+        : window.location.hash === '#huy-ve' ? 'cancel' : 'home'
+      setActiveView(nextView)
+      if (nextView !== 'home') window.scrollTo({ top: 0, behavior: 'smooth' })
     }
 
     window.addEventListener('hashchange', updateView)
@@ -1059,8 +1034,17 @@ export function HomePage() {
           </button>
         </div>
       </header>
-      {activeView === 'history' ? <BookingHistory /> : activeView === 'cancel' ? (
-        <TicketCancelForm onNavigateToHistory={() => { window.location.hash = '#lich-su' }} />
+      {activeView === 'history' ? (
+        <BookingHistory onCancelBooking={(bookingCode) => {
+          setCancellationBookingCode(bookingCode)
+          window.location.hash = '#huy-ve'
+        }} />
+      ) : activeView === 'cancel' ? (
+        <TicketCancelForm
+          initialBookingCode={cancellationBookingCode}
+          onInitialBookingCodeConsumed={() => setCancellationBookingCode('')}
+          onNavigateToHistory={() => { window.location.hash = '#lich-su' }}
+        />
       ) : <>
       <section className="home-hero">
         <div className="home-hero-content">
@@ -1075,151 +1059,46 @@ export function HomePage() {
             <div><span className="eyebrow">Tìm chuyến tàu</span><h2>Lên kế hoạch chuyến đi</h2></div>
             <span className="section-note">Chọn hành trình phù hợp với bạn</span>
         </div>
-          <form className="trip-search" onSubmit={handleSearch} noValidate>
-            <div className="trip-type-toggle" role="group" aria-label="Loại vé">
-              <button className={tripType === 'oneWay' ? 'trip-type-active' : ''} type="button" aria-pressed={tripType === 'oneWay'} onClick={() => setTripType('oneWay')}>Một chiều</button>
-              <button className={tripType === 'roundTrip' ? 'trip-type-active' : ''} type="button" aria-pressed={tripType === 'roundTrip'} onClick={() => setTripType('roundTrip')}>Khứ hồi</button>
-            </div>
-            <label className={`search-field${errors.origin ? ' search-field-error' : ''}`}>
-              <span>Ga đi</span>
-              <span className="search-control"><MapPin size={17} />
-                <select aria-label="Ga đi" value={origin} onChange={(event) => setOrigin(event.target.value)}>
-                  <option value="">Chọn ga khởi hành</option>
-                  {stations.map((station) => <option key={station.name} value={station.name}>{station.name}</option>)}
-                </select>
-              </span>
-              {errors.origin && <small className="search-error">{errors.origin}</small>}
-            </label>
-            <button className="swap-button" type="button" onClick={swapStations} aria-label="Đảo chiều ga đi và ga đến" title="Đảo chiều ga">
-              <ArrowLeftRight size={17} />
-            </button>
-            <label className={`search-field${errors.destination ? ' search-field-error' : ''}`}>
-              <span>Ga đến</span>
-              <span className="search-control"><MapPin size={17} />
-                <select aria-label="Ga đến" value={destination} onChange={(event) => setDestination(event.target.value)}>
-                  <option value="">Chọn ga đến</option>
-                  {stations.map((station) => <option key={station.name} value={station.name}>{station.name}</option>)}
-                </select>
-              </span>
-              {errors.destination && <small className="search-error">{errors.destination}</small>}
-            </label>
-            <label className={`search-field departure-date-field${errors.date ? ' search-field-error' : ''}`}>
-              <span>Ngày khởi hành</span>
-              <span className="search-control"><CalendarDays size={17} />
-                <input aria-label="Ngày khởi hành" type="date" value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} />
-              </span>
-              {errors.date && <small className="search-error">{errors.date}</small>}
-            </label>
-            {tripType === 'roundTrip' && (
-              <label className={`search-field return-date-field${errors.returnDate ? ' search-field-error' : ''}`}>
-                <span>Ngày về</span>
-                <span className="search-control"><CalendarDays size={17} />
-                  <input aria-label="Ngày về" type="date" min={departureDate || undefined} value={returnDate} onChange={(event) => setReturnDate(event.target.value)} />
-                </span>
-                {errors.returnDate && <small className="search-error">{errors.returnDate}</small>}
-              </label>
-            )}
-            <div className="search-field passenger-field">
-              <span>Hành khách</span>
-              <div className="passenger-control">
-                <Users size={17} aria-hidden="true" />
-                <button className="passenger-trigger" type="button" aria-expanded={passengerMenuOpen} aria-controls="passenger-menu" onClick={() => setPassengerMenuOpen((open) => !open)}>
-                  {passengerTotal} hành khách <ChevronDown size={15} aria-hidden="true" />
-                </button>
-                {passengerMenuOpen && (
-                  <div className="passenger-menu" id="passenger-menu">
-                    {passengerTypes.map((passenger) => (
-                      <label className="passenger-option" key={passenger.id}>
-                        <span><strong>{passenger.label}</strong><small>{passenger.note}</small></span>
-                        <select aria-label={passenger.label} value={passengerCounts[passenger.id]} onChange={(event) => setPassengerCounts((current) => ({ ...current, [passenger.id]: Number(event.target.value) }))}>
-                          {Array.from({ length: 9 - passenger.minimum }, (_, index) => index + passenger.minimum).map((count) => <option value={count} key={count}>{count}</option>)}
-                        </select>
-                      </label>
-                    ))}
-                    <button className="passenger-done" type="button" onClick={() => setPassengerMenuOpen(false)}>Xong</button>
-                  </div>
-                )}
-              </div>
-            </div>
-            <button className="submit-button search-button" type="submit">Tìm chuyến</button>
-        </form>
-          <div className="location-search">
-            <button className="location-button" type="button" onClick={findTripsFromCurrentLocation} disabled={isLocating}>
-              <MapPin size={16} />{isLocating ? 'Đang xác định vị trí...' : 'Tìm chuyến từ vị trí của tôi'}
-            </button>
-            {locationError && <p className="location-error" role="alert">{locationError}</p>}
-          </div>
-          {nearestStation && (
-            <section className="suggested-trips" aria-live="polite" aria-label="Chuyến tàu gợi ý gần bạn">
-              <div className="location-banner">
-                <MapPin size={18} />
-                <p>Vị trí của bạn gần <strong>{nearestStation.name}</strong> (cách khoảng {nearestStation.distanceKm.toFixed(1)} km). Dưới đây là các chuyến tàu sẵn sàng khởi hành:</p>
-              </div>
-              {suggestedTrips.length > 0 ? (
-                <div className="suggested-trip-list">
-                  {suggestedTrips.map((trip) => (
-                    <article className="suggested-trip-card" key={trip.code}>
-                      <div className="suggested-trip-heading"><span className="trip-icon"><TrainFront size={19} /></span><strong>{trip.code}</strong></div>
-                      <div className="suggested-trip-destination"><small>Ga đến</small><strong>{trip.destination}</strong></div>
-                      <div className="suggested-trip-time"><small>Giờ chạy</small><strong>{trip.departureTime}</strong></div>
-                      <div className="suggested-trip-price"><small>Giá vé từ</small><strong>{formatPrice(trip.minimumPrice)} đ</strong></div>
-                      <div className="suggested-trip-seats"><span className="availability-dot" />Còn {trip.availableSeats} chỗ</div>
-                      <button className="details-button" type="button" onClick={() => selectSuggestedTrip(trip)}>Chọn chuyến này</button>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-results">
-                  <span className="empty-icon"><TrainFront size={22} /></span>
-                  <div><strong>Chưa có chuyến tàu còn chỗ từ ga {nearestStation.name}</strong><p>Hãy thử tìm lại sau hoặc chọn một ga đi khác.</p></div>
-                </div>
-              )}
-            </section>
-          )}
-          {hasSearched && (
-            <section className="search-results" aria-live="polite" aria-label="Kết quả tìm kiếm">
-              <div className="results-heading">
-                <div><span className="eyebrow">Hành trình của bạn</span><h3>{origin} <span>→</span> {destination}</h3></div>
-                <p>{formatDate(departureDate)}{tripType === 'roundTrip' && returnDate ? ` · Về ${formatDate(returnDate)}` : ''}</p>
-              </div>
-              {matchingTrips.length > 0 ? (
-                <div className="trip-list">
-                {matchingTrips.map((trip) => {
-                  const availableSeatCount = getTripAvailableSeatCount(trip)
-                  return <article className="trip-card" key={trip.id}>
-                    <div className="trip-code"><span className="trip-icon"><TrainFront size={19} /></span><div><strong>{trip.code}</strong><small>Tàu Thống Nhất</small></div></div>
-                    <div className="trip-times"><strong>{trip.departureTime}</strong><span className="trip-track"><i /></span><strong>{trip.arrivalTime}<small>{trip.arrivalDayOffset ? '+1 ngày' : ''}</small></strong></div>
-                    <div className="trip-meta"><span><Clock3 size={14} />{formatDuration(trip.durationMinutes)}</span><span className="trip-price">{formatPrice(trip.minimumPrice)} – {formatPrice(trip.maximumPrice)} đ</span></div>
-                    <div className={`trip-availability${availableSeatCount === 0 ? ' trip-availability-full' : ''}`}><span className="availability-dot" />{availableSeatCount > 0 ? `Còn ${availableSeatCount} chỗ` : 'Hết chỗ (0)'}</div>
-                    <div className="trip-card-actions">
-                      <button className="details-button" type="button" onClick={() => openTripSelection(trip)}>Xem chi tiết</button>
-                      {availableSeatCount === 0 && (
-                        <button
-                          className={`notify-seat-button${isNotificationRegistered(trip) ? ' notify-seat-registered' : ''}`}
-                            type="button"
-                            disabled={isNotificationRegistered(trip)}
-                            onClick={() => { void registerForSeatNotification(trip) }}
-                          >
-                            <Bell size={15} />{isNotificationRegistered(trip) ? 'Đã đăng ký báo chỗ' : 'Báo tôi khi có chỗ'}
-                          </button>
-                        )}
-                      </div>
-                    </article>
-                  })}
-                  {unavailableTrips.length > 0 && alternativeTrip && (
-                    <p className="alternative-trip-tip" role="status">
-                      💡 Gợi ý: Còn chuyến {alternativeTrip.code} lúc {alternativeTrip.departureTime} cùng ngày còn {alternativeTrip.availableSeats} chỗ.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="empty-results">
-                  <span className="empty-icon"><TrainFront size={22} /></span>
-                  <div><strong>Không tìm thấy chuyến tàu phù hợp cho lộ trình này</strong><p>Hãy thử chọn ngày khác hoặc kiểm tra lại ga đi và ga đến.</p></div>
-                </div>
-              )}
-            </section>
-          )}
+        <SearchTrainForm
+          origin={origin}
+          destination={destination}
+          departureDate={departureDate}
+          tripType={tripType}
+          returnDate={returnDate}
+          passengerCounts={passengerCounts}
+          passengerTotal={passengerTotal}
+          passengerMenuOpen={passengerMenuOpen}
+          errors={errors}
+          nearestStation={nearestStation}
+          suggestedTrips={suggestedTrips}
+          locationError={locationError}
+          isLocating={isLocating}
+          onOriginChange={setOrigin}
+          onDestinationChange={setDestination}
+          onDepartureDateChange={setDepartureDate}
+          onTripTypeChange={setTripType}
+          onReturnDateChange={setReturnDate}
+          onPassengerCountChange={(type, count) => setPassengerCounts((current) => ({ ...current, [type]: count }))}
+          onPassengerMenuToggle={() => setPassengerMenuOpen((open) => !open)}
+          onSearch={handleSearch}
+          onSwapStations={swapStations}
+          onLocate={findTripsFromCurrentLocation}
+          onSuggestedTrip={selectSuggestedTrip}
+        />
+          <TrainList
+            visible={hasSearched}
+            origin={origin}
+            destination={destination}
+            departureDate={departureDate}
+            tripType={tripType}
+            returnDate={returnDate}
+            trips={tripsWithSeatCounts.map(({ trip, availableSeats }) => ({ trip, availableSeatCount: availableSeats }))}
+            unavailableTripCount={unavailableTrips.length}
+            alternativeTrip={alternativeTrip}
+            isNotificationRegistered={isNotificationRegistered}
+            onSelectTrip={openTripSelection}
+            onRegisterNotification={(trip) => { void registerForSeatNotification(trip) }}
+          />
       </section>
         {selectedTrip && (
           <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedTrip(null) }}>
@@ -1235,97 +1114,21 @@ export function HomePage() {
                   setBookingConfirmed(false)
                 }} />
               )}
-              {bookingStep === 'seats' && <div className="modal-content seat-map-content flex-1">
-                <div className="seat-map-intro">
-                  <div><span className="eyebrow">Sơ đồ chọn chỗ</span><p>Ghế trống được tạo tự động nếu chưa có dữ liệu.</p></div>
-                  <div className="seat-map-legend" aria-label="Chú thích sơ đồ ghế">
-                    <span><i className="legend-available" />Còn trống</span>
-                    <span><i className="legend-held" />Đang giữ</span>
-                    <span><i className="legend-sold" />Đã bán</span>
-                    <span><i className="legend-selected" />Đang chọn</span>
-                  </div>
-                </div>
-                {seatError && <p className="seat-load-error" role="alert">{seatError}</p>}
-                {seatLoading && <p className="seat-load-message" role="status">Đang tải sơ đồ ghế...</p>}
-                {(() => {
-                  const car = selectedCar
-                  const tiers = car.type === 'berth4' ? 2 : 3
-                  const seatsPerCompartment = tiers * 2
-                  const seatRows = currentCarSeats
-                  const renderSeat = (seat: SeatRow) => {
-                    const isSelected = selectedPlaces.some((place) => place.id === seat.id)
-                    const ownHold = seatHolds.some((hold) => hold.seat_id === seat.id && hold.session_id === sessionId)
-                    const isHeldElsewhere = seat.status === 'held' && !ownHold
-                    const isUnavailable = seat.status === 'booked' || isHeldElsewhere
-                    return (
-                      <button className={`seat-tile${isSelected ? ' seat-tile-selected' : ''}${seat.status === 'booked' ? ' seat-tile-sold' : ''}${isHeldElsewhere ? ' seat-tile-held' : ''}`} type="button" key={seat.id} disabled={isUnavailable || seatLoading} aria-pressed={isSelected} aria-label={`${car.type === 'seat' ? 'Ghế' : 'Giường'} ${seat.seat_number}, ${isSelected ? 'đang được bạn giữ' : seat.status === 'available' ? 'còn trống' : seat.status === 'held' ? 'đang được giữ' : 'đã bán'}, ${formatPrice(Number(seat.price))} đồng`} onClick={() => void toggleSeat(car.number, seat)}>
-                        {seat.seat_number}{isSelected && <Check size={13} aria-hidden="true" />}
-                      </button>
-                    )
-                  }
-                  const carPlaces = selectedPlaces.filter((place) => place.carNumber === car.number)
-                  const availableSeatCount = seatRows.filter((seat) => seat.status === 'available').length
-                  return (
-                    <section className="car-map" role="tabpanel" key={car.number}>
-                      <div className="car-map-heading"><h3>{car.title} · {car.typeLabel}</h3><span>{availableSeatCount} chỗ còn</span></div>
-                      {car.type === 'seat' ? (
-                        <div className="seat-coach" aria-label="Sơ đồ 4 hàng ghế, lối đi giữa toa">
-                          <div className="seat-row-grid">
-                            {Array.from({ length: Math.ceil(seatRows.length / 4) }, (_, rowIndex) => {
-                              const rowSeats = seatRows.slice(rowIndex * 4, rowIndex * 4 + 4)
-                              return (
-                                <div className="seat-row-line" key={rowIndex}>
-                                  <span className="seat-row-label">Hàng {rowIndex + 1}</span>
-                                  <div className="seat-pair">{rowSeats.slice(0, 2).map(renderSeat)}</div>
-                                  <span className="seat-aisle" aria-label="Lối đi" />
-                                  <div className="seat-pair">{rowSeats.slice(2).map(renderSeat)}</div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="seat-map-bedrooms">
-                          {Array.from({ length: Math.ceil(seatRows.length / seatsPerCompartment) }, (_, compartmentIndex) => {
-                            const compartmentSeats = seatRows.slice(compartmentIndex * seatsPerCompartment, compartmentIndex * seatsPerCompartment + seatsPerCompartment)
-                            return (
-                              <article className="bedroom" key={compartmentIndex}>
-                                <div className="bedroom-header"><span>Khoang {compartmentIndex + 1}</span><small>{tiers} tầng · {seatsPerCompartment} giường</small></div>
-                                <div className="bedroom-tiers">
-                                  {Array.from({ length: tiers }, (_, tierIndex) => (
-                                    <div className="bedroom-tier" key={tierIndex}>
-                                      <small>Tầng {tierIndex + 1}</small>
-                                      <div className="berth-pair">{compartmentSeats.slice(tierIndex * 2, tierIndex * 2 + 2).map(renderSeat)}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </article>
-                            )
-                          })}
-                        </div>
-                      )}
-                      <div className="selection-summary" aria-live="polite">
-                        <strong>Chỗ đã chọn trong {car.title}:</strong>
-                        {carPlaces.length > 0
-                          ? carPlaces.map((place) => <span className="selection-chip" key={place.seatNumber}>{car.type === 'seat' ? 'Ghế' : 'Giường'} {place.seatNumber}</span>)
-                          : <span className="selection-empty">Chưa chọn chỗ</span>}
-                      </div>
-                    </section>
-                  )
-                })()}
-                <section className="service-section">
-                  <h3>Dịch vụ mua kèm</h3>
-                  <div className="service-options">
-                    {addOnServices.map((service) => (
-                      <label className="service-option" key={service.id}>
-                        <input type="checkbox" checked={selectedServices.includes(service.id)} onChange={() => toggleService(service.id)} />
-                        <span className="service-icon">{service.id === 'meal' ? <Utensils size={16} /> : <TrainFront size={16} />}</span>
-                        <span className="service-copy"><strong>{service.label}</strong><small>+{formatPrice(service.price)} đ</small></span>
-                      </label>
-                    ))}
-                  </div>
-                </section>
-              </div>}
+              {bookingStep === 'seats' && (
+                <SeatMap
+                  car={selectedCar}
+                  seats={currentCarSeats}
+                  selectedPlaces={selectedPlaces}
+                  seatHolds={seatHolds}
+                  sessionId={sessionId}
+                  seatLoading={seatLoading}
+                  seatError={seatError}
+                  selectedServices={selectedServices}
+                  addOnServices={addOnServices}
+                  onToggleSeat={(carNumber, seat) => { void toggleSeat(carNumber, seat) }}
+                  onToggleService={toggleService}
+                />
+              )}
               {bookingStep === 'seats' && <footer className="modal-footer">
                 <div className="total-copy"><small><strong>Đang xem {selectedCar.title}</strong> · {selectedPlaces.length > 0 ? selectedPlaces.map((place) => `${trainCarriages[place.carNumber - 1].title} · ${place.seatNumber}`).join(', ') : 'Chưa chọn chỗ'} · dịch vụ {selectedServices.length} mục</small><strong>{formatPrice(totalPrice)} đ</strong>{bookingConfirmed && <p className="confirmation-message" role="status">Đã xác nhận lựa chọn chỗ ngồi.</p>}</div>
                 <div className="confirm-action">
@@ -1380,6 +1183,27 @@ export function HomePage() {
                           bookingCode={bookingRecord.booking_code}
                           totalAmount={bookingRecord.total_amount}
                           bankConfig={defaultVietQrBankConfig}
+                          tripDetails={{
+                            tripCode: selectedTrip?.code ?? '',
+                            origin: selectedTrip?.origin ?? '',
+                            destination: selectedTrip?.destination ?? '',
+                            departureDate: selectedTrip?.scheduleDate ?? '',
+                            departureTime: selectedTrip
+                              ? new Date(`${selectedTrip.scheduleDate}T${selectedTrip.departureTime}:00`).toISOString()
+                              : null,
+                            seats: selectedPlaces.map((place) =>
+                              `Toa ${place.carNumber} · Ghế ${place.seatNumber}`,
+                            ),
+                          }}
+                          onNavigateToHistory={() => {
+                            setSelectedTrip(null)
+                            window.location.hash = '#lich-su'
+                          }}
+                          onNavigateHome={() => {
+                            setSelectedTrip(null)
+                            window.location.hash = ''
+                            window.scrollTo({ top: 0, behavior: 'smooth' })
+                          }}
                         />
                       )}
                     </>

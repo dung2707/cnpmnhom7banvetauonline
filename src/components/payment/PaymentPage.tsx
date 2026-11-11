@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react'
-import { AlertCircle, CheckCircle2, CreditCard, Landmark, LoaderCircle, QrCode } from 'lucide-react'
-import { processPayment, type PaymentRecord } from '../../services/bookingService'
+import { AlertCircle, CreditCard, Landmark, LoaderCircle, QrCode } from 'lucide-react'
+import { processPayment } from '../../services/paymentService'
+import { sendTicketEmail } from '../../services/sendTicketEmail'
+import { PaymentSuccessModal } from './PaymentSuccessModal'
+import type { PaymentSuccessDetails } from './PaymentSuccessModal'
 
 export interface VietQrBankConfig {
   bankId: string
@@ -19,7 +22,9 @@ export interface PaymentPageProps {
   bookingCode: string
   totalAmount: number
   bankConfig: VietQrBankConfig
-  onPaymentSubmitted?: (payment: PaymentRecord) => void
+  tripDetails: Omit<PaymentSuccessDetails, 'bookingCode' | 'totalAmount'>
+  onNavigateToHistory: () => void
+  onNavigateHome: () => void
 }
 
 type PaymentMethod = 'vietqr' | 'domestic_card'
@@ -33,7 +38,9 @@ export function PaymentPage({
   bookingCode,
   totalAmount,
   bankConfig,
-  onPaymentSubmitted,
+  tripDetails,
+  onNavigateToHistory,
+  onNavigateHome,
 }: PaymentPageProps) {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('vietqr')
   const [isLoading, setIsLoading] = useState(false)
@@ -65,14 +72,14 @@ export function PaymentPage({
     setErrorMessage('')
     setIsLoading(true)
     try {
-      const payment = await processPayment({
+      await processPayment({
         bookingId,
         paymentMethod,
         amount: Math.round(totalAmount),
         referenceCode: bookingCode,
       })
       setPaymentSubmitted(true)
-      onPaymentSubmitted?.(payment)
+      void sendTicketEmail({ bookingId }).catch(() => undefined)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Không thể gửi yêu cầu xác nhận thanh toán.')
     } finally {
@@ -81,7 +88,8 @@ export function PaymentPage({
   }
 
   return (
-    <section aria-label={`Thanh toán đơn ${bookingCode}`} className="mx-auto w-full max-w-3xl space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
+    <>
+      <section aria-label={`Thanh toán đơn ${bookingCode}`} className="mx-auto w-full max-w-3xl space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8">
       <header>
         <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">US05 · Thanh toán</p>
         <h1 className="mt-1 text-2xl font-bold text-slate-900">Hoàn tất thanh toán</h1>
@@ -165,13 +173,6 @@ export function PaymentPage({
         </p>
       )}
 
-      {paymentSubmitted && (
-        <p className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
-          <CheckCircle2 size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
-          Đã gửi yêu cầu xác nhận. Giao dịch vẫn đang chờ hệ thống đối soát; vé chỉ được xác nhận sau khi nhận được kết quả thanh toán hợp lệ.
-        </p>
-      )}
-
       <button
         className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 py-3 font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
         type="button"
@@ -179,8 +180,16 @@ export function PaymentPage({
         onClick={handleConfirmTransfer}
       >
         {isLoading && <LoaderCircle size={18} className="animate-spin" aria-hidden="true" />}
-        {isLoading ? 'Đang gửi yêu cầu...' : paymentSubmitted ? 'Đã gửi yêu cầu xác nhận' : 'Xác nhận đã chuyển khoản'}
+        {isLoading ? 'Đang xác nhận...' : paymentSubmitted ? 'Thanh toán thành công' : 'Xác nhận đã chuyển khoản'}
       </button>
-    </section>
+      </section>
+      {paymentSubmitted && (
+        <PaymentSuccessModal
+          details={{ ...tripDetails, bookingCode, totalAmount }}
+          onNavigateToHistory={onNavigateToHistory}
+          onNavigateHome={onNavigateHome}
+        />
+      )}
+    </>
   )
 }

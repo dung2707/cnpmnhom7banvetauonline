@@ -1,36 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, LoaderCircle, Mail, TrainFront, X } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
-import { supabase } from '../../lib/supabase'
 import { generateTripsForDate } from '../../services/tripSchedule'
 import { sendTicketEmail } from '../../services/sendTicketEmail'
-
-interface TicketPassenger {
-  id: string
-  full_name: string
-  phone: string
-  email: string
-  carriage_number: number
-  seat_number: number
-  passenger_type: string
-  date_of_birth: string | null
-  student_id: string | null
-  school_name: string | null
-}
-
-interface TicketBooking {
-  id: string
-  booking_code: string
-  trip_code: string
-  trip_date: string
-  departure_time: string | null
-  origin: string
-  destination: string
-  contact_email: string
-  status: string
-  booking_passengers: TicketPassenger[]
-}
+import { getTicketBooking } from '../../services/bookingService'
+import { generateTicketQrCode } from '../../utils/qrCodeGenerator'
+import type { TicketBooking, TicketPassenger } from '../../types'
 
 interface ETicketModalProps {
   bookingId: string
@@ -72,6 +47,7 @@ function getTicketTypeLabel(passenger: TicketPassenger) {
 
 export function ETicketModal({ bookingId, onClose }: ETicketModalProps) {
   const [booking, setBooking] = useState<TicketBooking | null>(null)
+  const [qrCodes, setQrCodes] = useState<Record<string, string>>({})
   const [departureTime, setDepartureTime] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
@@ -86,38 +62,11 @@ export function ETicketModal({ bookingId, onClose }: ETicketModalProps) {
     async function loadTicket() {
       setIsLoading(true)
       setErrorMessage('')
+      setQrCodes({})
       try {
-        const { data, error } = await supabase
-          .from('bookings')
-          .select(`
-            id,
-            booking_code,
-            trip_code,
-            trip_date,
-            departure_time,
-            origin,
-            destination,
-            contact_email,
-            status,
-            booking_passengers (
-              id,
-              full_name,
-              phone,
-              email,
-              carriage_number,
-              seat_number,
-              passenger_type,
-              date_of_birth,
-              student_id,
-              school_name
-            )
-          `)
-          .eq('id', bookingId)
-          .maybeSingle()
-        if (error) throw error
-        if (!data) throw new Error('Không tìm thấy thông tin vé.')
+        const loadedBooking = await getTicketBooking(bookingId)
+        if (!loadedBooking) throw new Error('Không tìm thấy thông tin vé.')
 
-        const loadedBooking = data as TicketBooking
         const departure = loadedBooking.departure_time
           ? new Date(loadedBooking.departure_time)
           : (() => {
@@ -136,8 +85,18 @@ export function ETicketModal({ bookingId, onClose }: ETicketModalProps) {
         if (loadedBooking.booking_passengers.length === 0) {
           throw new Error('Vé chưa có thông tin hành khách.')
         }
+        const generatedQrCodes = await Promise.all(loadedBooking.booking_passengers.map(async (passenger) => [
+          passenger.id,
+          await generateTicketQrCode({
+            bookingId: loadedBooking.id,
+            passengerName: passenger.full_name,
+            seatNumber: passenger.seat_number,
+            trainNo: loadedBooking.trip_code,
+          }),
+        ] as const))
         if (isActive) {
           setBooking(loadedBooking)
+          setQrCodes(Object.fromEntries(generatedQrCodes))
           setDepartureTime(departure.toISOString())
         }
       } catch (error) {
@@ -241,12 +200,6 @@ export function ETicketModal({ bookingId, onClose }: ETicketModalProps) {
           ) : booking ? (
             <>
               {booking.booking_passengers.map((passenger) => {
-                const qrValue = JSON.stringify({
-                  bookingId: booking.id,
-                  passengerName: passenger.full_name,
-                  seatNumber: passenger.seat_number,
-                  trainNo: booking.trip_code,
-                })
                 return (
                   <article
                     className="mx-auto max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
@@ -301,7 +254,13 @@ export function ETicketModal({ bookingId, onClose }: ETicketModalProps) {
                         </div>
                       </div>
                       <div className="mx-auto rounded-xl border border-slate-200 bg-white p-3 text-center">
-                        <QRCodeSVG aria-label={`Mã QR vé ${booking.booking_code}, ghế ${passenger.seat_number}`} size={144} value={qrValue} />
+                        <img
+                          alt={`Mã QR vé ${booking.booking_code}, ghế ${passenger.seat_number}`}
+                          className="size-36"
+                          height={144}
+                          src={qrCodes[passenger.id]}
+                          width={144}
+                        />
                         <p className="mt-2 text-xs font-medium text-slate-500">Quét mã khi vào ga</p>
                       </div>
                     </div>

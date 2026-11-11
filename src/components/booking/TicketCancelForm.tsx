@@ -1,43 +1,11 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { AlertCircle, CheckCircle2, Loader2, TicketX, TrainFront, UserRound, X } from 'lucide-react'
-import { supabase } from '../../lib/supabase'
-import { generateTripsForDate } from '../../services/tripSchedule'
-
-interface BookingPassenger {
-  id: string
-  full_name: string
-  phone: string
-  email: string
-  seat_id: string
-  carriage_number: number
-  seat_number: number
-  base_fare: number | null
-  final_fare: number | null
-}
-
-interface CancellationBooking {
-  id: string
-  booking_code: string
-  trip_code: string
-  trip_date: string
-  departure_time: string | null
-  origin: string
-  destination: string
-  status: string
-  total_amount: number
-  cancellation_fee: number | null
-  refund_amount: number | null
-  cancelled_at: string | null
-  cancellation_reason: string | null
-  booking_passengers: BookingPassenger[]
-}
-
-interface SeatSnapshot {
-  id: string
-  status: string
-}
+import { cancelBooking, getBookingForCancellation } from '../../services/bookingService'
+import type { CancellationBooking } from '../../types'
 
 interface TicketCancelFormProps {
+  initialBookingCode?: string
+  onInitialBookingCodeConsumed?: () => void
   onNavigateToHistory?: () => void
 }
 
@@ -47,16 +15,7 @@ const cancellationReasons = [
   'Không còn nhu cầu di chuyển',
   'Lý do khác',
 ]
-const invalidBookingMessage = 'Mã đơn hàng hoặc Số điện thoại không chính xác'
-const expiredBookingMessage = 'Đã quá thời hạn hủy vé trực tuyến (Tối thiểu 4 tiếng trước giờ khởi hành)'
 const feeRate = 0.1
-
-function validateCancellation(departureTime: Date, now = new Date()) {
-  if (Number.isNaN(departureTime.getTime())) return 'Không xác định được giờ khởi hành của chuyến tàu.'
-  return departureTime.getTime() - now.getTime() >= 4 * 60 * 60 * 1000
-    ? ''
-    : expiredBookingMessage
-}
 
 function formatCurrency(amount: number) {
   return `${new Intl.NumberFormat('vi-VN').format(amount)} đ`
@@ -77,12 +36,28 @@ function formatDeparture(value: string) {
 }
 
 function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Đã xảy ra lỗi. Vui lòng thử lại.'
+  if (typeof error === 'object' && error !== null) {
+    const details = error as { message?: unknown; error?: unknown }
+    const message = details.message || details.error
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  if (typeof error === 'string' && error.trim()) return error
+  return 'Đã có lỗi xảy ra'
 }
 
-export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps) {
+function getCancellationErrorMessage(error: unknown) {
+  const message = getErrorMessage(error)
+  return message.startsWith('Không thể hủy vé:')
+    ? message.replace(/^(Không thể hủy vé:\s*)+/, 'Không thể hủy vé: ')
+    : `Không thể hủy vé: ${message}`
+}
+
+export function TicketCancelForm({
+  initialBookingCode,
+  onInitialBookingCodeConsumed,
+  onNavigateToHistory,
+}: TicketCancelFormProps) {
   const [bookingCode, setBookingCode] = useState('')
-  const [phone, setPhone] = useState('')
   const [booking, setBooking] = useState<CancellationBooking | null>(null)
   const [departureTime, setDepartureTime] = useState('')
   const [cancellationReason, setCancellationReason] = useState(cancellationReasons[0])
@@ -90,6 +65,7 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [failureToast, setFailureToast] = useState('')
 
   const passengerFare = booking?.booking_passengers.reduce((total, passenger) => {
     const fare = Number(passenger.final_fare ?? passenger.base_fare ?? 0)
@@ -99,60 +75,25 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
   const cancellationFee = Math.round(originalFare * feeRate)
   const refundAmount = originalFare - cancellationFee
 
-  async function handleLookup(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function lookupBooking(code: string) {
     if (isChecking || isSubmitting) return
 
     setBooking(null)
     setDepartureTime('')
     setErrorMessage('')
     setSuccessMessage('')
+    setFailureToast('')
     setIsChecking(true)
     try {
-      const normalizedCode = bookingCode.trim()
-      const normalizedPhone = phone.trim()
-      if (!normalizedCode || !normalizedPhone) {
-        setErrorMessage('Vui lòng nhập mã đơn hàng và số điện thoại đặt vé.')
+      const normalizedCode = code.trim()
+      if (!normalizedCode) {
+        setErrorMessage('Vui lòng nhập mã đơn hàng.')
         return
       }
 
-      const { data, error } = await supabase
-        .from('bookings')
-        .select(`
-          id,
-          booking_code,
-          trip_code,
-          trip_date,
-          departure_time,
-          origin,
-          destination,
-          status,
-          total_amount,
-          cancellation_fee,
-          refund_amount,
-          cancelled_at,
-          cancellation_reason,
-          booking_passengers (
-            id,
-            full_name,
-            phone,
-            email,
-            seat_id,
-            carriage_number,
-            seat_number,
-            base_fare,
-            final_fare
-          )
-        `)
-        .eq('booking_code', normalizedCode)
-        .maybeSingle()
-
-      if (error) throw error
-      const foundBooking = data as CancellationBooking | null
-      if (!foundBooking || !foundBooking.booking_passengers.some(
-        (passenger) => passenger.phone.trim() === normalizedPhone,
-      )) {
-        setErrorMessage(invalidBookingMessage)
+      const foundBooking = await getBookingForCancellation(normalizedCode)
+      if (!foundBooking) {
+        setErrorMessage('Không tìm thấy đơn hàng với mã đã nhập.')
         return
       }
 
@@ -161,28 +102,7 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
         return
       }
 
-      let departure: Date
-      if (foundBooking.departure_time) {
-        departure = new Date(foundBooking.departure_time)
-      } else {
-        const scheduledTrip = generateTripsForDate(
-          foundBooking.origin,
-          foundBooking.destination,
-          foundBooking.trip_date.slice(0, 10),
-        ).find((trip) => trip.code === foundBooking.trip_code)
-        if (!scheduledTrip) {
-          setErrorMessage('Không tìm thấy lịch khởi hành phù hợp với mã chuyến trong vé.')
-          return
-        }
-        departure = new Date(`${foundBooking.trip_date.slice(0, 10)}T${scheduledTrip.departureTime}:00`)
-      }
-      const validationError = validateCancellation(departure)
-      if (validationError) {
-        setErrorMessage(validationError)
-        return
-      }
-
-      setDepartureTime(departure.toISOString())
+      setDepartureTime(foundBooking.departure_time ?? foundBooking.trip_date)
       setBooking(foundBooking)
     } catch (error) {
       setErrorMessage(`Không thể kiểm tra thông tin vé: ${getErrorMessage(error)}`)
@@ -191,107 +111,38 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
     }
   }
 
-  async function restoreBookingAndSeats(
-    currentBooking: CancellationBooking,
-    seatSnapshots: SeatSnapshot[],
-  ) {
-    const restoreErrors: string[] = []
-    const { error: bookingRestoreError } = await supabase
-      .from('bookings')
-      .update({
-        status: currentBooking.status,
-        cancellation_fee: currentBooking.cancellation_fee,
-        refund_amount: currentBooking.refund_amount,
-        cancelled_at: currentBooking.cancelled_at,
-        cancellation_reason: currentBooking.cancellation_reason,
-      })
-      .eq('id', currentBooking.id)
-    if (bookingRestoreError) restoreErrors.push(`booking: ${bookingRestoreError.message}`)
-
-    const snapshotsByStatus = new Map<string, string[]>()
-    for (const seat of seatSnapshots) {
-      const seatIds = snapshotsByStatus.get(seat.status) ?? []
-      seatIds.push(seat.id)
-      snapshotsByStatus.set(seat.status, seatIds)
-    }
-    for (const [status, seatIds] of snapshotsByStatus) {
-      const { error } = await supabase.from('seats').update({ status }).in('id', seatIds)
-      if (error) restoreErrors.push(`ghế: ${error.message}`)
-    }
-
-    return restoreErrors
+  async function handleLookup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await lookupBooking(bookingCode)
   }
+
+  useEffect(() => {
+    const normalizedCode = initialBookingCode?.trim()
+    if (!normalizedCode) return
+    setBookingCode(normalizedCode)
+    void lookupBooking(normalizedCode)
+    onInitialBookingCodeConsumed?.()
+  }, [initialBookingCode])
 
   async function handleConfirmCancellation() {
     if (!booking || isSubmitting) return
 
     setErrorMessage('')
     setIsSubmitting(true)
-    let updatedBooking = false
-    let seatSnapshots: SeatSnapshot[] = []
     try {
-      const currentDeparture = new Date(departureTime)
-      const validationError = validateCancellation(currentDeparture)
-      if (validationError) throw new Error(validationError)
-      if (booking.booking_passengers.length === 0) {
-        throw new Error('Không tìm thấy hành khách hoặc ghế của vé để thực hiện hủy.')
-      }
-
-      const seatIds = [...new Set(booking.booking_passengers.map((passenger) => passenger.seat_id).filter(Boolean))]
-      if (seatIds.length === 0) throw new Error('Không tìm thấy mã ghế của vé để giải phóng.')
-
-      const { data: currentSeats, error: seatLookupError } = await supabase
-        .from('seats')
-        .select('id, status')
-        .in('id', seatIds)
-      if (seatLookupError) throw seatLookupError
-      seatSnapshots = (currentSeats ?? []) as SeatSnapshot[]
-      if (seatSnapshots.length !== seatIds.length) {
-        throw new Error('Không thể xác định trạng thái của toàn bộ ghế trong vé.')
-      }
-
-      const cancellationTime = new Date().toISOString()
-      const { data: updatedRows, error: bookingUpdateError } = await supabase
-        .from('bookings')
-        .update({
-          status: 'cancelled',
-          cancellation_fee: cancellationFee,
-          refund_amount: refundAmount,
-          cancelled_at: cancellationTime,
-          cancellation_reason: cancellationReason,
-        })
-        .eq('id', booking.id)
-        .eq('status', booking.status)
-        .select('id')
-      if (bookingUpdateError) throw bookingUpdateError
-      if (!updatedRows?.length) throw new Error('Trạng thái vé đã thay đổi. Vui lòng tra cứu lại.')
-      updatedBooking = true
-
-      const { data: updatedSeats, error: seatUpdateError } = await supabase
-        .from('seats')
-        .update({ status: 'available' })
-        .in('id', seatIds)
-        .select('id')
-      if (seatUpdateError) throw seatUpdateError
-      if (updatedSeats?.length !== seatIds.length) {
-        throw new Error('Không thể giải phóng toàn bộ ghế của vé.')
-      }
+      await cancelBooking({ booking, cancellationFee, refundAmount, cancellationReason })
 
       setBooking(null)
       setSuccessMessage('Hủy vé thành công. Đang chuyển đến Lịch sử đặt vé...')
+      setFailureToast('')
       window.setTimeout(() => {
         if (onNavigateToHistory) onNavigateToHistory()
         else window.location.hash = '#lich-su'
       }, 1500)
     } catch (error) {
-      let message = getErrorMessage(error)
-      if (updatedBooking) {
-        const restoreErrors = await restoreBookingAndSeats(booking, seatSnapshots)
-        if (restoreErrors.length > 0) {
-          message += ` Không thể hoàn tác đầy đủ dữ liệu: ${restoreErrors.join('; ')}`
-        }
-      }
-      setErrorMessage(`Không thể hủy vé: ${message}`)
+      const message = getCancellationErrorMessage(error)
+      setErrorMessage(message)
+      setFailureToast(message)
     } finally {
       setIsSubmitting(false)
     }
@@ -303,7 +154,7 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
         <span className="text-sm font-semibold uppercase tracking-wide text-emerald-800">Hỗ trợ đặt vé</span>
         <h1 className="mt-2 text-3xl font-bold text-slate-900" id="ticket-cancel-title">Hủy vé trực tuyến</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Tra cứu bằng mã đơn hàng và số điện thoại đã dùng khi đặt vé. Yêu cầu hủy cần được thực hiện trước giờ tàu chạy ít nhất 4 tiếng.
+          Tra cứu và hủy vé bằng mã đơn hàng.
         </p>
       </header>
 
@@ -323,21 +174,6 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
             required
           />
         </div>
-        <div>
-          <label className="mb-1.5 block text-sm font-semibold text-slate-700" htmlFor="cancel-booking-phone">
-            Số điện thoại đặt vé
-          </label>
-          <input
-            autoComplete="tel"
-            className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
-            id="cancel-booking-phone"
-            inputMode="tel"
-            onChange={(event) => setPhone(event.target.value)}
-            placeholder="Nhập số điện thoại đã đăng ký"
-            value={phone}
-            required
-          />
-        </div>
         {errorMessage && (
           <p className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
             <AlertCircle className="mt-0.5 shrink-0" size={17} />{errorMessage}
@@ -346,6 +182,11 @@ export function TicketCancelForm({ onNavigateToHistory }: TicketCancelFormProps)
         {successMessage && (
           <p className="fixed right-4 top-4 z-[60] flex max-w-md items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 shadow-lg" role="status">
             <CheckCircle2 className="mt-0.5 shrink-0" size={17} />{successMessage}
+          </p>
+        )}
+        {failureToast && (
+          <p className="fixed right-4 top-4 z-[60] flex max-w-md items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 shadow-lg" role="alert">
+            <AlertCircle className="mt-0.5 shrink-0" size={17} />{failureToast}
           </p>
         )}
         <button

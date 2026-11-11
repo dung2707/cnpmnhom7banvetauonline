@@ -1,25 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-
-export type PassengerType = 'adult' | 'child' | 'student' | 'senior'
-
-export interface BookingSeat {
-  id: string
-  carNumber: number
-  seatNumber: number
-  price: number
-  carriageTitle?: string
-}
-
-export interface PassengerDetails {
-  seatId: string
-  fullName: string
-  phone: string
-  email: string
-  type: PassengerType
-  dateOfBirth?: string
-  studentId?: string
-  schoolName?: string
-}
+import type { BookingSeat, PassengerDetails, PassengerType } from '../../types'
+export type { BookingSeat, PassengerDetails, PassengerType } from '../../types'
 
 interface PassengerFormValues {
   fullName: string

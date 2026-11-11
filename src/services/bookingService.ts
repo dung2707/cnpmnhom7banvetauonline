@@ -1,64 +1,21 @@
 import { supabase } from '../lib/supabase'
-import type { PassengerDetails, PassengerType } from '../components/booking/PassengerForm'
+import type {
+  Booking,
+  BookingPassengerInput,
+  BookingRecord,
+  CancellationBooking,
+  CreateBookingInput,
+  PassengerType,
+  SavedPassengerRecord,
+  TicketBooking,
+} from '../types'
 
-export interface CreateBookingInput {
-  bookingCode: string
-  tripId: string
-  tripCode: string
-  tripDate: string
-  departureTime: string
-  origin: string
-  destination: string
-  contactEmail: string
-  totalAmount: number
-}
-
-export interface BookingRecord {
-  id: string
-  booking_code: string
-  status: string
-  total_amount: number
-}
-
-export interface BookingPassengerInput extends PassengerDetails {
-  carNumber: number
-  seatNumber: number
-  baseFare: number
-}
-
-export interface SavedPassengerRecord {
-  id: string
-  booking_id: string
-  seat_id: string
-  full_name: string
-  phone: string
-  email: string
-  passenger_type: PassengerType
-  date_of_birth: string | null
-  student_id: string | null
-  school_name: string | null
-  base_fare: number
-  discount_rate: number
-  final_fare: number
-}
-
-export type PaymentMethod = 'vietqr' | 'domestic_card'
-
-export interface ProcessPaymentInput {
-  bookingId: string
-  paymentMethod: PaymentMethod
-  amount: number
-  referenceCode: string
-}
-
-export interface PaymentRecord {
-  id: string
-  booking_id: string
-  payment_method: PaymentMethod
-  amount: number
-  reference_code: string
-  status: 'pending_verification'
-}
+export type {
+  BookingPassengerInput,
+  BookingRecord,
+  CreateBookingInput,
+  SavedPassengerRecord,
+} from '../types'
 
 export class BookingServiceError extends Error {
   readonly originalError: unknown
@@ -69,6 +26,17 @@ export class BookingServiceError extends Error {
     this.originalError = originalError
   }
 }
+
+export interface CancelBookingInput {
+  booking: CancellationBooking
+  cancellationFee: number
+  refundAmount: number
+  cancellationReason: string
+}
+
+export const cancellationWindowError =
+  'Không thể hủy vé: Đã quá thời hạn cho phép hủy vé (chỉ được phép hủy trong vòng 4 tiếng sau khi đặt / trước giờ tàu chạy).'
+const cancellationWindowMs = 4 * 60 * 60 * 1000
 
 const discountRates: Record<PassengerType, number> = {
   adult: 0,
@@ -219,34 +187,150 @@ export async function savePassengers(
   }
 }
 
-export async function processPayment(input: ProcessPaymentInput): Promise<PaymentRecord> {
-  try {
-    if (!input.bookingId.trim() || !input.referenceCode.trim()) {
-      throw new Error('Thiếu mã đặt vé hoặc mã tham chiếu thanh toán.')
-    }
-    if (!Number.isFinite(input.amount) || input.amount <= 0) {
-      throw new Error('Số tiền thanh toán phải lớn hơn 0.')
-    }
+export async function getBookingForCancellation(bookingCode: string): Promise<CancellationBooking | null> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select(`
+      id,
+      booking_code,
+      trip_code,
+      trip_date,
+      created_at,
+      departure_time,
+      origin,
+      destination,
+      status,
+      total_amount,
+      cancellation_fee,
+      refund_amount,
+      cancelled_at,
+      cancellation_reason,
+      booking_passengers (
+        id,
+        full_name,
+        phone,
+        email,
+        seat_id,
+        carriage_number,
+        seat_number,
+        base_fare,
+        final_fare
+      )
+    `)
+    .eq('booking_code', bookingCode)
+    .maybeSingle()
 
-    const { data, error } = await supabase
-      .from('payments')
-      .insert({
-        booking_id: input.bookingId,
-        payment_method: input.paymentMethod,
-        amount: Math.round(input.amount),
-        reference_code: input.referenceCode.trim(),
-        status: 'pending_verification',
-      })
-      .select('id, booking_id, payment_method, amount, reference_code, status')
-      .single()
+  if (error) throw error
+  return data as CancellationBooking | null
+}
 
-    if (error) throw error
-    if (!data) throw new Error('Supabase không trả về yêu cầu thanh toán vừa tạo.')
+function validateCancellationWindow(booking: CancellationBooking) {
+  const createdAt = Date.parse(booking.created_at)
+  const departureAt = booking.departure_time ? Date.parse(booking.departure_time) : Number.NaN
+  const now = Date.now()
 
-    return data
-  } catch (error) {
-    throw new BookingServiceError(`Không thể gửi yêu cầu thanh toán: ${errorMessage(error)}`, error)
+  if (
+    !Number.isFinite(createdAt) ||
+    (now - createdAt > cancellationWindowMs) ||
+    (Number.isFinite(departureAt) && departureAt - now <= cancellationWindowMs)
+  ) {
+    throw new BookingServiceError(cancellationWindowError, cancellationWindowError)
   }
+}
+
+function getErrorMessage(error: unknown) {
+  if (typeof error === 'object' && error !== null) {
+    const details = error as { message?: unknown; error?: unknown }
+    if (typeof details.message === 'string' && details.message.trim()) return details.message
+    if (typeof details.error === 'string' && details.error.trim()) return details.error
+  }
+  if (typeof error === 'string' && error.trim()) return error
+  return 'Đã có lỗi xảy ra'
+}
+
+export async function cancelBooking(input: CancelBookingInput): Promise<void> {
+  try {
+    validateCancellationWindow(input.booking)
+    const { error } = await supabase.rpc('cancel_booking_and_release_seats', {
+      p_booking_code: input.booking.booking_code,
+      p_cancellation_fee: input.cancellationFee,
+      p_refund_amount: input.refundAmount,
+      p_cancellation_reason: input.cancellationReason,
+    })
+    if (error) throw error
+  } catch (error) {
+    if (error instanceof BookingServiceError) throw error
+    throw new BookingServiceError(getErrorMessage(error), error)
+  }
+}
+
+export async function getBookingHistory(contactEmail?: string): Promise<Booking[]> {
+  let query = supabase
+    .from('bookings')
+    .select(`
+      id,
+      booking_code,
+      trip_code,
+      trip_date,
+      departure_time,
+      origin,
+      destination,
+      status,
+      total_amount,
+      booking_passengers (
+        id,
+        full_name,
+        phone,
+        email,
+        carriage_number,
+        seat_number,
+        passenger_type
+      ),
+      payments (
+        id,
+        status
+      )
+    `)
+    .order('created_at', { ascending: false })
+
+  if (contactEmail) query = query.eq('contact_email', contactEmail)
+
+  const { data, error } = await query
+  if (error) throw error
+  return (data ?? []) as Booking[]
+}
+
+export async function getTicketBooking(bookingId: string): Promise<TicketBooking | null> {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select(`
+      id,
+      booking_code,
+      trip_code,
+      trip_date,
+      departure_time,
+      origin,
+      destination,
+      contact_email,
+      status,
+      booking_passengers (
+        id,
+        full_name,
+        phone,
+        email,
+        carriage_number,
+        seat_number,
+        passenger_type,
+        date_of_birth,
+        student_id,
+        school_name
+      )
+    `)
+    .eq('id', bookingId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data as TicketBooking | null
 }
 
 /*

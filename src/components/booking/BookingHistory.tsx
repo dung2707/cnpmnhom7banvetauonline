@@ -2,36 +2,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { CalendarDays, ChevronDown, Clock3, QrCode, RotateCw, Ticket, TrainFront, Users, X } from 'lucide-react'
 import { useAuth } from '../../auth/AuthContext'
 import { supabase } from '../../lib/supabase'
+import { getBookingHistory } from '../../services/bookingService'
+import type { Booking } from '../../types'
 import { PaymentPage, defaultVietQrBankConfig } from '../payment/PaymentPage'
 import { ETicketModal } from './ETicketModal'
 
-interface BookingPassenger {
-  id: string
-  full_name: string
-  phone: string
-  email: string
-  carriage_number: number
-  seat_number: number
-  passenger_type: string
-}
-
-interface BookingPayment {
-  id: string
-  status: string
-}
-
-interface Booking {
-  id: string
-  booking_code: string
-  trip_code: string
-  trip_date: string
-  status: string
-  total_amount: number
-  booking_passengers: BookingPassenger[]
-  payments: BookingPayment[]
-}
-
 const demoEmail = 'demo@duongsat.vn'
+
+interface BookingHistoryProps {
+  onCancelBooking: (bookingCode: string) => void
+}
 
 function getStatus(booking: Booking) {
   const bookingStatus = booking.status.toLocaleLowerCase('en')
@@ -68,7 +48,7 @@ function formatDepartureDate(date: string) {
     : new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: 'long', year: 'numeric' }).format(parsedDate)
 }
 
-export function BookingHistory() {
+export function BookingHistory({ onCancelBooking }: BookingHistoryProps) {
   const { user } = useAuth()
   const [bookings, setBookings] = useState<Booking[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -81,43 +61,13 @@ export function BookingHistory() {
     setLoadingError('')
 
     try {
-      let query = supabase
-        .from('bookings')
-        .select(`
-          id,
-          booking_code,
-          trip_code,
-          trip_date,
-          status,
-          total_amount,
-          booking_passengers (
-            id,
-            full_name,
-            phone,
-            email,
-            carriage_number,
-            seat_number,
-            passenger_type
-          ),
-          payments (
-            id,
-            status
-          )
-        `)
-        .order('created_at', { ascending: false })
-
-      if (user?.email?.toLocaleLowerCase('vi') !== demoEmail) {
-        if (!user?.email) {
-          setBookings([])
-          return
-        }
-        query = query.eq('contact_email', user.email)
+      const isDemoUser = user?.email?.toLocaleLowerCase('vi') === demoEmail
+      if (!isDemoUser && !user?.email) {
+        setBookings([])
+        return
       }
 
-      const { data, error } = await query
-      if (error) throw error
-
-      setBookings((data ?? []) as Booking[])
+      setBookings(await getBookingHistory(isDemoUser ? undefined : user.email))
     } catch (error) {
       setLoadingError(error instanceof Error ? error.message : 'Không thể tải lịch sử đặt vé.')
     } finally {
@@ -128,6 +78,30 @@ export function BookingHistory() {
   useEffect(() => {
     void loadBookings()
   }, [loadBookings])
+
+  useEffect(() => {
+    let refreshTimeout: number | undefined
+    const channel = supabase
+      .channel(`booking-history:${user?.email ?? 'demo'}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, () => {
+        window.clearTimeout(refreshTimeout)
+        refreshTimeout = window.setTimeout(() => { void loadBookings() }, 250)
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_passengers' }, () => {
+        window.clearTimeout(refreshTimeout)
+        refreshTimeout = window.setTimeout(() => { void loadBookings() }, 250)
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, () => {
+        window.clearTimeout(refreshTimeout)
+        refreshTimeout = window.setTimeout(() => { void loadBookings() }, 250)
+      })
+      .subscribe()
+
+    return () => {
+      window.clearTimeout(refreshTimeout)
+      void supabase.removeChannel(channel)
+    }
+  }, [loadBookings, user?.email])
 
   return (
     <section className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8" aria-labelledby="booking-history-title">
@@ -148,7 +122,7 @@ export function BookingHistory() {
         </button>
       </header>
 
-      {isLoading ? (
+      {isLoading && bookings.length === 0 ? (
         <div className="space-y-4" aria-label="Đang tải lịch sử đặt vé" aria-busy="true">
           {[0, 1, 2].map((item) => (
             <div className="animate-pulse rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" key={item}>
@@ -162,7 +136,7 @@ export function BookingHistory() {
             </div>
           ))}
         </div>
-      ) : loadingError ? (
+      ) : loadingError && bookings.length === 0 ? (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-center">
           <p className="text-sm text-red-800" role="alert">Không thể tải lịch sử đặt vé: {loadingError}</p>
           <button
@@ -281,14 +255,14 @@ export function BookingHistory() {
                       <button
                         className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50"
                         type="button"
-                        onClick={() => { window.location.hash = '#huy-ve' }}
+                        onClick={() => onCancelBooking(booking.booking_code)}
                       >
                         Hủy vé trực tuyến
                       </button>
                     </div>
                   )}
                 </div>
-                {selectedPaymentBookingId === booking.id && status === 'pending' && (
+                {selectedPaymentBookingId === booking.id && (
                   <div className="border-t border-slate-100 bg-slate-50 p-4 sm:p-6">
                     <div className="mx-auto mb-4 flex w-full max-w-3xl items-center justify-between gap-3">
                       <h3 className="font-semibold text-slate-900">Thanh toán đơn {booking.booking_code}</h3>
@@ -306,9 +280,25 @@ export function BookingHistory() {
                       bookingCode={booking.booking_code}
                       totalAmount={Number(booking.total_amount)}
                       bankConfig={defaultVietQrBankConfig}
-                      onPaymentSubmitted={() => {
+                      tripDetails={{
+                        tripCode: booking.trip_code,
+                        origin: booking.origin,
+                        destination: booking.destination,
+                        departureDate: booking.trip_date,
+                        departureTime: booking.departure_time,
+                        seats: booking.booking_passengers.map((passenger) =>
+                          `Toa ${passenger.carriage_number} · Ghế ${passenger.seat_number}`,
+                        ),
+                      }}
+                      onNavigateToHistory={() => {
                         setSelectedPaymentBookingId(null)
                         void loadBookings()
+                        window.location.hash = '#lich-su'
+                      }}
+                      onNavigateHome={() => {
+                        setSelectedPaymentBookingId(null)
+                        window.location.hash = ''
+                        window.scrollTo({ top: 0, behavior: 'smooth' })
                       }}
                     />
                   </div>

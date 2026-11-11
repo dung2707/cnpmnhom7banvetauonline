@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { BookingSeat, PassengerDetails, PassengerType } from './PassengerForm'
+import type { BookingSeat, PassengerDetails, PassengerType } from '../../types'
 
 export interface BookingSummaryRow {
   passenger: PassengerDetails
