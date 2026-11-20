@@ -1,0 +1,54 @@
+export function BookingHistory({
+  onCancelBooking,
+}: BookingHistoryProps) {
+  const { user } = useAuth()
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [selectedTicketId, setSelectedTicketId] =
+    useState<string | null>(null)
+
+  const loadBookings = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const isDemoUser =
+        user?.email?.toLocaleLowerCase('vi') === demoEmail
+      if (!isDemoUser && !user?.email) {
+        setBookings([])
+        return
+      }
+
+      setBookings(
+        await getBookingHistory(
+          isDemoUser ? undefined : user.email,
+        ),
+      )
+    } finally {
+      setIsLoading(false)
+    }
+  }, [user?.email])
+
+  // Nút mở vé điện tử
+  {status === 'paid' && (
+    <button
+      type="button"
+      onClick={() => setSelectedTicketId(booking.id)}
+    >
+      Vé điện tử
+    </button>
+  )}
+
+  // Nút chuyển sang trang hủy vé
+  <button
+    type="button"
+    onClick={() => onCancelBooking(booking.booking_code)}
+  >
+    Hủy vé trực tuyến
+  </button>
+
+  {selectedTicketId && (
+    <ETicketModal
+      bookingId={selectedTicketId}
+      onClose={() => setSelectedTicketId(null)}
+    />
+  )}
+}
