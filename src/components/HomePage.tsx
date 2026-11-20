@@ -488,6 +488,7 @@ export function HomePage() {
     const carriageIds = trainCarriages.map((car) => `T${car.number}`)
     const realtimeSeatUpdates = new Map<string, SeatRow | null>()
 
+    //sprint 2 phần 1
     async function loadSeatData() {
       setSeatLoading(true)
       setSeatError('')
@@ -618,6 +619,7 @@ export function HomePage() {
       isActive = false
       void supabase.removeChannel(channel)
     }
+    //ket thuc sprint 2 phần 1
   }, [selectedTrip?.id, sessionId])
 
   useEffect(() => {
@@ -841,7 +843,7 @@ export function HomePage() {
     setToast(null)
     openTripSelection(trip)
   }
-
+//sprint 2 phần 2
   async function toggleSeat(carNumber: number, seat: SeatRow) {
     if (!sessionId || pendingSeatIds.current.has(seat.id)) return
     pendingSeatIds.current.add(seat.id)
@@ -946,6 +948,7 @@ export function HomePage() {
       pendingSeatIds.current.delete(seat.id)
     }
   }
+  //ket thuc sprint 2 phần 2
 
   function toggleService(serviceId: AddOnId) {
     setSelectedServices((current) => current.includes(serviceId)
