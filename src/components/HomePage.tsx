@@ -945,7 +945,7 @@ export function HomePage() {
     setToast(null)
     openTripSelection(trip)
   }
-
+//sprint 2 phần 2
   async function toggleSeat(carNumber: number, seat: SeatRow) {
     if (!sessionId || pendingSeatIds.current.has(seat.id)) return
     pendingSeatIds.current.add(seat.id)
@@ -1050,6 +1050,7 @@ export function HomePage() {
       pendingSeatIds.current.delete(seat.id)
     }
   }
+  //ket thuc sprint 2 phần 2
 
   function toggleService(serviceId: AddOnId) {
     setSelectedServices((current) => current.includes(serviceId)
