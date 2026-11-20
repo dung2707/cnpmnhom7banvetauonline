@@ -1,3 +1,4 @@
+//sprint 4
 import { supabase } from '../lib/supabase'
 import type {
   Booking,
@@ -237,6 +238,7 @@ function validateCancellationWindow(booking: CancellationBooking) {
     throw new BookingServiceError(cancellationWindowError, cancellationWindowError)
   }
 }
+//ket thuc sprint 4
 
 function getErrorMessage(error: unknown) {
   if (typeof error === 'object' && error !== null) {
