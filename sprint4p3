@@ -1,0 +1,36 @@
+const cancellationReasons = [
+  'Thay đổi kế hoạch',
+  'Chọn nhầm chuyến hoặc thông tin vé',
+  'Không còn nhu cầu di chuyển',
+  'Lý do khác',
+]
+
+const feeRate = 0.1
+
+export function TicketCancelForm({
+  initialBookingCode,
+  onInitialBookingCodeConsumed,
+  onNavigateToHistory,
+}: TicketCancelFormProps) {
+  const [bookingCode, setBookingCode] = useState('')
+  const [booking, setBooking] =
+    useState<CancellationBooking | null>(null)
+
+  const passengerFare =
+    booking?.booking_passengers.reduce((total, passenger) => {
+      const fare = Number(
+        passenger.final_fare ?? passenger.base_fare ?? 0,
+      )
+      return total + (Number.isFinite(fare) ? fare : 0)
+    }, 0) ?? 0
+
+  const originalFare =
+    passengerFare > 0
+      ? passengerFare
+      : Number(booking?.total_amount ?? 0)
+
+  const cancellationFee =
+    Math.round(originalFare * feeRate)
+
+  const refundAmount =
+    originalFare - cancellationFee
