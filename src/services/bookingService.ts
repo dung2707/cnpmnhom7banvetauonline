@@ -1,3 +1,4 @@
+//sprint 4
 import { supabase } from '../lib/supabase'
 import type { PassengerDetails, PassengerType } from '../components/booking/PassengerForm'
 
@@ -201,6 +202,7 @@ export async function processPayment(input: ProcessPaymentInput): Promise<Paymen
     throw new BookingServiceError(`Không thể gửi yêu cầu thanh toán: ${errorMessage(error)}`, error)
   }
 }
+//ket thuc sprint 4
 
 /*
 Test case 1 — US04: Chọn hai ghế, nhập đủ họ tên, số điện thoại Việt Nam hợp lệ,
