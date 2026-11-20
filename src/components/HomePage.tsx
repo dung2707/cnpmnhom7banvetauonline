@@ -591,6 +591,7 @@ export function HomePage() {
     const carriageIds = trainCarriages.map((car) => `T${car.number}`)
     const realtimeSeatUpdates = new Map<string, SeatRow | null>()
 
+    //sprint 2 phần 1
     async function loadSeatData() {
       setSeatLoading(true)
       setSeatError('')
@@ -721,6 +722,7 @@ export function HomePage() {
       isActive = false
       void supabase.removeChannel(channel)
     }
+    //ket thuc sprint 2 phần 1
   }, [selectedTrip?.id, sessionId])
 
   useEffect(() => {
