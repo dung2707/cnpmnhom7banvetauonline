@@ -1,0 +1,30 @@
+export type SeatStatus =
+  | 'available'
+  | 'held'
+  | 'booked'
+
+export interface SeatRow {
+  id: string
+  carriage_id: string
+  seat_number: number
+  price: number
+  status: SeatStatus
+  isFallback?: boolean
+  trip_code?: string
+  trip_id?: string
+  trip_date?: string
+}
+
+export interface SeatHold {
+  id: string
+  seat_id: string
+  session_id: string
+  expires_at: string
+}
+
+export interface SelectedPlace {
+  id: string
+  carNumber: number
+  seatNumber: number
+  price: number
+}

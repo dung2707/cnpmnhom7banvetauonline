@@ -1,0 +1,20 @@
+{activeView === 'history' ? (
+  <BookingHistory
+    onCancelBooking={(bookingCode) => {
+      setCancellationBookingCode(bookingCode)
+      window.location.hash = '#huy-ve'
+    }}
+  />
+) : activeView === 'cancel' ? (
+  <TicketCancelForm
+    initialBookingCode={cancellationBookingCode}
+    onInitialBookingCodeConsumed={() =>
+      setCancellationBookingCode('')
+    }
+    onNavigateToHistory={() => {
+      window.location.hash = '#lich-su'
+    }}
+  />
+) : (
+  // Trang đặt vé
+)}

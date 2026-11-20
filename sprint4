@@ -1,0 +1,86 @@
+export function ETicketModal({ bookingId, onClose }: ETicketModalProps) {
+  const [booking, setBooking] = useState<TicketBooking | null>(null)
+  const [qrCodes, setQrCodes] = useState<Record<string, string>>({})
+  const [departureTime, setDepartureTime] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isDownloading, setIsDownloading] = useState(false)
+  const [isSendingEmail, setIsSendingEmail] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    let isActive = true
+
+    async function loadTicket() {
+      setIsLoading(true)
+      setErrorMessage('')
+      setQrCodes({})
+      try {
+        const loadedBooking = await getTicketBooking(bookingId)
+        if (!loadedBooking) {
+          throw new Error('Không tìm thấy thông tin vé.')
+        }
+
+        const departure = loadedBooking.departure_time
+          ? new Date(loadedBooking.departure_time)
+          : (() => {
+              const trip = generateTripsForDate(
+                loadedBooking.origin,
+                loadedBooking.destination,
+                loadedBooking.trip_date.slice(0, 10),
+              ).find(
+                (scheduledTrip) =>
+                  scheduledTrip.code === loadedBooking.trip_code,
+              )
+              return trip
+                ? new Date(
+                    `${loadedBooking.trip_date.slice(0, 10)}T${trip.departureTime}:00`,
+                  )
+                : new Date(loadedBooking.trip_date)
+            })()
+
+        if (Number.isNaN(departure.getTime())) {
+          throw new Error(
+            'Không xác định được ngày giờ khởi hành của vé.',
+          )
+        }
+
+        if (loadedBooking.booking_passengers.length === 0) {
+          throw new Error('Vé chưa có thông tin hành khách.')
+        }
+
+        const generatedQrCodes = await Promise.all(
+          loadedBooking.booking_passengers.map(async (passenger) => [
+            passenger.id,
+            await generateTicketQrCode({
+              bookingId: loadedBooking.id,
+              passengerName: passenger.full_name,
+              seatNumber: passenger.seat_number,
+              trainNo: loadedBooking.trip_code,
+            }),
+          ] as const),
+        )
+
+        if (isActive) {
+          setBooking(loadedBooking)
+          setQrCodes(Object.fromEntries(generatedQrCodes))
+          setDepartureTime(departure.toISOString())
+        }
+      } catch (error) {
+        if (isActive) {
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : 'Không thể tải vé điện tử.',
+          )
+        }
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+
+    void loadTicket()
+    return () => {
+      isActive = false
+    }
+  }, [bookingId])
