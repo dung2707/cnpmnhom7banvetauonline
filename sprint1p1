@@ -1,0 +1,10 @@
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = 'https://lzvgvpdjwukwxgvjokhy.supabase.co';
+// Thay chuỗi bên dưới bằng mã 'anon' 'public' (bắt đầu bằng eyJ...) bạn copy trên Supabase
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+
+
